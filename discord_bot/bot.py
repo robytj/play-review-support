@@ -19,6 +19,7 @@ from discord.ext import commands
 from app import db, router
 from app.config import (
     DISCORD_BOT_TOKEN, DISCORD_STAFF_ROLE_ID, DISCORD_ESCALATION_CHANNEL_ID,
+    DISCORD_TICKETS_CHANNEL_ID,
 )
 
 intents = discord.Intents.default()
@@ -34,10 +35,16 @@ bot = commands.Bot(command_prefix="!", intents=intents)
 _reply_message_map: dict[int, int] = {}
 
 
+# DISCORD_STAFF_ROLE_ID may hold more than one role id, comma-separated (e.g. a
+# "Moderator" role and a separate "Staff Volunteer" role) -- either one counts as
+# staff for pausing the bot and getting pinged on Tier-3 escalations.
+_STAFF_ROLE_IDS = {rid.strip() for rid in DISCORD_STAFF_ROLE_ID.split(",") if rid.strip()}
+
+
 def _is_staff(member: discord.Member) -> bool:
-    if not DISCORD_STAFF_ROLE_ID:
+    if not _STAFF_ROLE_IDS:
         return member.guild_permissions.manage_messages
-    return any(str(r.id) == DISCORD_STAFF_ROLE_ID for r in getattr(member, "roles", []))
+    return any(str(r.id) in _STAFF_ROLE_IDS for r in getattr(member, "roles", []))
 
 
 @bot.event
@@ -56,6 +63,20 @@ async def on_message(message: discord.Message):
 
     is_dm = isinstance(message.channel, discord.DMChannel)
     is_thread = isinstance(message.channel, discord.Thread)
+
+    # Scope: only actively answer in the configured tickets channel (+ threads
+    # opened under it) and in DMs -- spec section 5 ("listens in your support
+    # channel(s), ticket threads, and DMs"). Stays quiet everywhere else. If
+    # DISCORD_TICKETS_CHANNEL_ID is unset, no restriction is applied (fine for
+    # a quick local test, not for a real server with more than one channel).
+    if DISCORD_TICKETS_CHANNEL_ID and not is_dm:
+        if is_thread:
+            in_scope = str(getattr(message.channel, "parent_id", "")) == DISCORD_TICKETS_CHANNEL_ID
+        else:
+            in_scope = str(message.channel.id) == DISCORD_TICKETS_CHANNEL_ID
+        if not in_scope:
+            return
+
     external_id = str(message.channel.id)
 
     conn = db.get_conn()
@@ -101,7 +122,7 @@ async def on_message(message: discord.Message):
     if result["escalate"] and DISCORD_ESCALATION_CHANNEL_ID:
         chan = bot.get_channel(int(DISCORD_ESCALATION_CHANNEL_ID))
         if chan:
-            role_mention = f"<@&{DISCORD_STAFF_ROLE_ID}>" if DISCORD_STAFF_ROLE_ID else "@here"
+            role_mention = " ".join(f"<@&{rid}>" for rid in _STAFF_ROLE_IDS) if _STAFF_ROLE_IDS else "@here"
             await chan.send(
                 f"{role_mention} Tier-3 escalation from {message.author.mention}: "
                 f"{sent.jump_url}\n> {message.content[:200]}"

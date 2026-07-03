@@ -77,8 +77,18 @@ _apply(_load_yaml())
 ANTHROPIC_API_KEY = os.environ.get("ANTHROPIC_API_KEY", "")
 DISCORD_BOT_TOKEN = os.environ.get("DISCORD_BOT_TOKEN", "")
 DISCORD_GUILD_ID = os.environ.get("DISCORD_GUILD_ID", "")
+# May be one role id or several comma-separated (e.g. a Moderator role plus a
+# separate Staff Volunteer role) -- discord_bot/bot.py splits on comma and
+# treats any of them as staff.
 DISCORD_STAFF_ROLE_ID = os.environ.get("DISCORD_STAFF_ROLE_ID", "")
 DISCORD_ESCALATION_CHANNEL_ID = os.environ.get("DISCORD_ESCALATION_CHANNEL_ID", "")
+# The channel the bot actively listens in for new player questions (spec section 5:
+# "listens in your support channel(s), ticket threads, and DMs"). Threads created
+# under this channel, and DMs, are always in scope too. If unset, falls back to
+# listening in every channel the bot can see -- fine for a quick local test, NOT
+# fine for production (set this before inviting the bot to a real server with more
+# than one channel).
+DISCORD_TICKETS_CHANNEL_ID = os.environ.get("DISCORD_TICKETS_CHANNEL_ID", "")
 
 FRESHDESK_DOMAIN = os.environ.get("FRESHDESK_DOMAIN", "")
 FRESHDESK_API_KEY = os.environ.get("FRESHDESK_API_KEY", "")
