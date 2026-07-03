@@ -31,12 +31,27 @@ def require_service_key(authorization: str = Header(default="")):
 
 # ------------------------------------------------------------------ feed / queue --
 
+def _discord_url(channel: str, external_id: str) -> str | None:
+    """Deep link back to the live Discord ticket channel/thread, e.g.
+    https://discord.com/channels/<guild>/<channel-or-thread-id> -- works for
+    both because Discord resolves thread ids the same way. None if this isn't
+    a Discord conversation or the guild id isn't configured."""
+    if channel != "discord" or not external_id or not config.DISCORD_GUILD_ID:
+        return None
+    return f"https://discord.com/channels/{config.DISCORD_GUILD_ID}/{external_id}"
+
+
+def _enrich(row: dict) -> dict:
+    row["discord_url"] = _discord_url(row.get("channel"), row.get("external_id"))
+    return row
+
+
 @router.get("/feed", dependencies=[Depends(require_service_key)])
 def feed(limit: int = 50):
     conn = db.get_conn()
     rows = conn.execute(
         """
-        SELECT c.id, c.channel, c.external_id, c.status, c.context, c.updated_at,
+        SELECT c.id, c.channel, c.external_id, c.status, c.context, c.player_id, c.updated_at,
                (SELECT text FROM messages WHERE conversation_id = c.id ORDER BY id DESC LIMIT 1) AS last_text,
                (SELECT tier_used FROM messages WHERE conversation_id = c.id AND role='bot' ORDER BY id DESC LIMIT 1) AS last_tier
         FROM conversations c
@@ -45,7 +60,7 @@ def feed(limit: int = 50):
         """,
         (limit,),
     ).fetchall()
-    return [dict(r) for r in rows]
+    return [_enrich(dict(r)) for r in rows]
 
 
 @router.get("/conversations/{conversation_id}", dependencies=[Depends(require_service_key)])
@@ -57,7 +72,7 @@ def conversation_detail(conversation_id: int):
     messages = conn.execute(
         "SELECT * FROM messages WHERE conversation_id = ? ORDER BY id ASC", (conversation_id,)
     ).fetchall()
-    return {"conversation": dict(convo), "messages": [dict(m) for m in messages]}
+    return {"conversation": _enrich(dict(convo)), "messages": [dict(m) for m in messages]}
 
 
 @router.post("/conversations/{conversation_id}/resolve", dependencies=[Depends(require_service_key)])
@@ -77,7 +92,7 @@ def queue():
     conn = db.get_conn()
     rows = conn.execute(
         """
-        SELECT DISTINCT c.id, c.channel, c.external_id, c.status, c.updated_at,
+        SELECT DISTINCT c.id, c.channel, c.external_id, c.status, c.player_id, c.updated_at,
                (SELECT text FROM messages WHERE conversation_id = c.id ORDER BY id DESC LIMIT 1) AS last_text
         FROM conversations c
         WHERE c.status = 'paused'
@@ -87,7 +102,7 @@ def queue():
         ORDER BY c.updated_at DESC
         """
     ).fetchall()
-    return [dict(r) for r in rows]
+    return [_enrich(dict(r)) for r in rows]
 
 
 # ---------------------------------------------------------------------------- kb --
@@ -231,4 +246,7 @@ def get_settings():
 def post_settings(payload: dict):
     thresholds = payload.get("thresholds")
     sensitive_keywords = payload.get("sensitive_keywords")
-    return config.write_settings(thresholds=thresholds, sensitive_keywords=sensitive_keywords)
+    shadow_mode = payload.get("shadow_mode")
+    return config.write_settings(
+        thresholds=thresholds, sensitive_keywords=sensitive_keywords, shadow_mode=shadow_mode
+    )

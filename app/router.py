@@ -116,17 +116,22 @@ def answer(question: str, conversation_id: int) -> dict:
     return {"tier": 3, "text": HOLDING_REPLY, "message_id": mid, "escalate": True}
 
 
-def get_or_create_conversation(channel: str, external_id: str, context: str = "") -> int:
+def get_or_create_conversation(channel: str, external_id: str, context: str = "", player_id: str = None) -> int:
     conn = db.get_conn()
     row = conn.execute(
-        "SELECT id FROM conversations WHERE channel = ? AND external_id = ? AND status != 'resolved'",
+        "SELECT id, player_id FROM conversations WHERE channel = ? AND external_id = ? AND status != 'resolved'",
         (channel, external_id),
     ).fetchone()
     if row:
+        # Ticket King's card (with the account id) can arrive after the conversation
+        # already exists in rare orderings -- backfill it instead of dropping it.
+        if player_id and not row["player_id"]:
+            with db.tx() as c:
+                c.execute("UPDATE conversations SET player_id = ? WHERE id = ?", (player_id, row["id"]))
         return row["id"]
     with db.tx() as c:
         cur = c.execute(
-            "INSERT INTO conversations (channel, external_id, context) VALUES (?, ?, ?)",
-            (channel, external_id, context),
+            "INSERT INTO conversations (channel, external_id, context, player_id) VALUES (?, ?, ?, ?)",
+            (channel, external_id, context, player_id),
         )
         return cur.lastrowid

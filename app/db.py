@@ -49,6 +49,7 @@ CREATE TABLE IF NOT EXISTS conversations (
     external_id TEXT,               -- discord thread id / web session id
     status TEXT NOT NULL DEFAULT 'open',  -- open | escalated | resolved | paused
     context TEXT DEFAULT '',        -- json: page_url, order_id, etc.
+    player_id TEXT,                 -- parsed from Ticket King's "ID da sua conta" field, if present
     created_at TEXT DEFAULT (datetime('now')),
     updated_at TEXT DEFAULT (datetime('now'))
 );
@@ -119,6 +120,18 @@ def init_db():
     conn = get_conn()
     conn.executescript(SCHEMA)
     conn.commit()
+    _migrate(conn)
+
+
+def _migrate(conn):
+    """Small in-place migrations for columns added after the initial deploy --
+    CREATE TABLE IF NOT EXISTS above doesn't add columns to an already-existing
+    table, so new columns need an explicit, idempotent ALTER TABLE here. Not
+    worth a full migration framework for a single-file SQLite app this size."""
+    cols = {row["name"] for row in conn.execute("PRAGMA table_info(conversations)").fetchall()}
+    if "player_id" not in cols:
+        conn.execute("ALTER TABLE conversations ADD COLUMN player_id TEXT")
+        conn.commit()
 
 
 @contextmanager

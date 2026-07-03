@@ -4,15 +4,21 @@ no HTTP hop needed since this runs as a second process in the same Railway servi
 
 Flow: message in a tracked channel/thread or DM -> router.answer() -> reply in-place.
 Tickets on this server are opened by a separate bot (Ticket King), which creates a
-brand-new private channel per ticket under one category -- so if DISCORD_TICKETS_
-CATEGORY_ID is set, we just reply directly in whatever ticket channel the question
-came from (no need to also spin up our own thread there). If it's unset (no external
-ticket bot configured), we fall back to opening our own thread per new question so
-this still works as free ticketing on a simpler server.
+brand-new private channel per ticket under one category and posts the ticket itself
+as an embed *from its own bot account* -- so we can't blanket-ignore bot-authored
+messages like a simpler setup would; instead we ignore only our own messages, and
+for any other bot/app message we try to parse it as a Ticket King card (see
+_parse_ticket_king_card) and ignore it if it doesn't look like one.
+
+If DISCORD_TICKETS_CATEGORY_ID is set, we just reply directly in whatever ticket
+channel the question came from (no need to also spin up our own thread there). If
+it's unset (no external ticket bot configured), we fall back to opening our own
+thread per new question so this still works as free ticketing on a simpler server.
 Any staff message in a tracked channel/thread pauses the bot there; `!resume` un-pauses.
 Bot reacts to its own answers with 👍/👎; those reactions are logged as feedback.
 Tier-3 escalations ping the staff role in a private staff channel.
 """
+import re
 import sys
 from pathlib import Path
 
@@ -22,9 +28,10 @@ import discord
 from discord.ext import commands
 
 from app import db, router
+from app import config as app_config
 from app.config import (
     DISCORD_BOT_TOKEN, DISCORD_STAFF_ROLE_ID, DISCORD_ESCALATION_CHANNEL_ID,
-    DISCORD_TICKETS_CATEGORY_ID, DISCORD_SHADOW_MODE,
+    DISCORD_TICKETS_CATEGORY_ID,
 )
 
 intents = discord.Intents.default()
@@ -52,6 +59,31 @@ def _is_staff(member: discord.Member) -> bool:
     return any(str(r.id) in _STAFF_ROLE_IDS for r in getattr(member, "roles", []))
 
 
+_ACCOUNT_ID_FIELD_RE = re.compile(r"id\s+da\s+sua\s+conta", re.IGNORECASE)   # "Qual é o ID da sua conta?"
+_QUESTION_FIELD_RE = re.compile(r"d[uú]vida|problema", re.IGNORECASE)         # "...sua dúvida ou problema?"
+
+
+def _parse_ticket_king_card(message: discord.Message):
+    """Ticket King posts the ticket itself as an embed from its own bot account
+    when a player opens one -- title 'Ticket Aberto', with fields like 'Qual é
+    o ID da sua conta?' (-> the player's account id) and 'Qual é a sua dúvida
+    ou problema?' (-> their actual question). Returns (player_id, question),
+    either of which may be None. Both None means this message doesn't look
+    like a Ticket King card at all (e.g. some other bot/app's unrelated
+    message in the same channel) -- callers should ignore it in that case."""
+    for embed in message.embeds:
+        player_id, question = None, None
+        for f in embed.fields or []:
+            name, value = f.name or "", (f.value or "").strip()
+            if _ACCOUNT_ID_FIELD_RE.search(name):
+                player_id = value
+            elif _QUESTION_FIELD_RE.search(name):
+                question = value
+        if player_id or question:
+            return player_id, question
+    return None, None
+
+
 def _in_tickets_scope(channel) -> bool:
     """True if this channel/thread lives under DISCORD_TICKETS_CATEGORY_ID.
     Tickets on this server are opened by a separate bot (Ticket King), which
@@ -76,12 +108,19 @@ async def on_ready():
 
 @bot.event
 async def on_message(message: discord.Message):
-    if message.author.bot:
-        return
+    ticket_player_id = None
+    ticket_question = None
 
-    await bot.process_commands(message)
-    if message.content.startswith("!"):
-        return
+    if message.author.bot:
+        if bot.user and message.author.id == bot.user.id:
+            return  # never react to our own messages
+        ticket_player_id, ticket_question = _parse_ticket_king_card(message)
+        if not ticket_player_id and not ticket_question:
+            return  # some other bot/app's message, not a ticket card -- ignore
+    else:
+        await bot.process_commands(message)
+        if message.content.startswith("!"):
+            return
 
     is_dm = isinstance(message.channel, discord.DMChannel)
     is_thread = isinstance(message.channel, discord.Thread)
@@ -111,19 +150,30 @@ async def on_message(message: discord.Message):
     if convo and convo["status"] == "paused":
         return  # human has the wheel; !resume brings the bot back
 
-    if DISCORD_SHADOW_MODE:
+    # The actual question to route: Ticket King's card carries it in a field
+    # (message.content on that message is usually just an @-mention), a plain
+    # follow-up message from the player carries it in message.content directly.
+    question_text = ticket_question or message.content
+    if not question_text:
+        # A ticket card with an account id but no question yet (unusual, but
+        # possible) -- still worth remembering the player id for later messages.
+        if ticket_player_id:
+            router.get_or_create_conversation("discord", external_id, player_id=ticket_player_id)
+        return
+
+    if app_config.DISCORD_SHADOW_MODE:
         # Ingest the ticket and run it through the full router so it shows up
         # in the dashboard feed/queue exactly like a live answer would, but
         # don't post any answer/thread/escalation in Discord -- just react
         # with 👀 on the ticket message so it's visible the bot is alive and
         # actively watching, without it speaking yet. For validating the
         # pipeline against real tickets before trusting it to talk to players.
-        conv_id = router.get_or_create_conversation("discord", external_id)
-        router._log_message(conv_id, "user", None, message.content)
-        result = router.answer(message.content, conv_id)
+        conv_id = router.get_or_create_conversation("discord", external_id, player_id=ticket_player_id)
+        router._log_message(conv_id, "user", None, question_text)
+        result = router.answer(question_text, conv_id)
         print(
-            f"[shadow] conv={conv_id} tier={result['tier']} escalate={result['escalate']} "
-            f"would_reply={result['text'][:150]!r}"
+            f"[shadow] conv={conv_id} player_id={ticket_player_id!r} tier={result['tier']} "
+            f"escalate={result['escalate']} would_reply={result['text'][:150]!r}"
         )
         try:
             await message.add_reaction("👀")
@@ -138,17 +188,17 @@ async def on_message(message: discord.Message):
     target_channel = message.channel
     if not is_dm and not is_thread and not DISCORD_TICKETS_CATEGORY_ID:
         try:
-            thread = await message.create_thread(name=message.content[:80] or "Support question")
+            thread = await message.create_thread(name=question_text[:80] or "Support question")
             target_channel = thread
             external_id = str(thread.id)
         except discord.HTTPException as e:
             print(f"[warn] couldn't create thread ({e!r}), replying inline")
 
-    conv_id = router.get_or_create_conversation("discord", external_id)
-    router._log_message(conv_id, "user", None, message.content)
+    conv_id = router.get_or_create_conversation("discord", external_id, player_id=ticket_player_id)
+    router._log_message(conv_id, "user", None, question_text)
     await target_channel.trigger_typing() if hasattr(target_channel, "trigger_typing") else None
 
-    result = router.answer(message.content, conv_id)
+    result = router.answer(question_text, conv_id)
     sent = await target_channel.send(result["text"])
     _reply_message_map[sent.id] = result["message_id"]
 
@@ -162,9 +212,10 @@ async def on_message(message: discord.Message):
         chan = bot.get_channel(int(DISCORD_ESCALATION_CHANNEL_ID))
         if chan:
             role_mention = " ".join(f"<@&{rid}>" for rid in _STAFF_ROLE_IDS) if _STAFF_ROLE_IDS else "@here"
+            who = f"player `{ticket_player_id}`" if ticket_player_id else message.author.mention
             await chan.send(
-                f"{role_mention} Tier-3 escalation from {message.author.mention}: "
-                f"{sent.jump_url}\n> {message.content[:200]}"
+                f"{role_mention} Tier-3 escalation from {who}: "
+                f"{sent.jump_url}\n> {question_text[:200]}"
             )
 
 

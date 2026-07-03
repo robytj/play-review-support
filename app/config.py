@@ -38,6 +38,13 @@ def _apply(cfg: dict):
     g["CANNED_PROMOTION_MIN_SENDS"] = cfg["learning"]["canned_promotion_min_sends"]
     g["CANNED_PROMOTION_MIN_POSITIVE_RATE"] = cfg["learning"]["canned_promotion_min_positive_rate"]
 
+    # Shadow mode lives in config.yaml (not env) specifically so the Support tab's
+    # toggle can flip it live via POST /api/dashboard/settings -> write_settings()
+    # -> reload(), no redeploy needed. discord_bot/bot.py must reference this via
+    # `from app import config; config.DISCORD_SHADOW_MODE` at call time, same
+    # hot-reload rule as the thresholds below.
+    g["DISCORD_SHADOW_MODE"] = bool(cfg.get("discord", {}).get("shadow_mode", False))
+
 
 def reload():
     """Re-reads config.yaml from disk and updates the live module globals.
@@ -55,10 +62,11 @@ def get_thresholds_dict() -> dict:
         "tau_retrieval_confidence": TAU_RETRIEVAL_CONFIDENCE,
         "rag_top_k": RAG_TOP_K,
         "sensitive_keywords": SENSITIVE_KEYWORDS,
+        "shadow_mode": DISCORD_SHADOW_MODE,
     }
 
 
-def write_settings(thresholds: dict = None, sensitive_keywords: list = None):
+def write_settings(thresholds: dict = None, sensitive_keywords: list = None, shadow_mode: bool = None):
     """Used by POST /api/dashboard/settings. Rewrites config.yaml (preserving
     everything else) then reload()s so it takes effect immediately."""
     cfg = _load_yaml()
@@ -66,6 +74,8 @@ def write_settings(thresholds: dict = None, sensitive_keywords: list = None):
         cfg["thresholds"].update(thresholds)
     if sensitive_keywords is not None:
         cfg["escalation"]["sensitive_keywords"] = sensitive_keywords
+    if shadow_mode is not None:
+        cfg.setdefault("discord", {})["shadow_mode"] = bool(shadow_mode)
     with open(CONFIG_YAML_PATH, "w") as f:
         yaml.safe_dump(cfg, f, sort_keys=False)
     return reload()
@@ -92,13 +102,9 @@ DISCORD_ESCALATION_CHANNEL_ID = os.environ.get("DISCORD_ESCALATION_CHANNEL_ID", 
 # test, NOT fine for production.
 DISCORD_TICKETS_CATEGORY_ID = os.environ.get("DISCORD_TICKETS_CATEGORY_ID", "")
 
-# Shadow mode: the bot still ingests every ticket message and runs it through the
-# full router (so it shows up in the dashboard's feed/queue exactly like a live
-# answer would), but never touches Discord -- no reply, no reactions, no thread,
-# no escalation ping. For validating the pipeline against real tickets before
-# trusting it to actually talk to players. Flip to false once you've checked the
-# dashboard output looks right.
-DISCORD_SHADOW_MODE = os.environ.get("DISCORD_SHADOW_MODE", "false").strip().lower() in ("1", "true", "yes")
+# NOTE: DISCORD_SHADOW_MODE (whether the bot ingests tickets silently vs.
+# actually replies) is set in _apply() from config.yaml, not from an env var
+# here -- that's what lets the Support tab's toggle flip it live, no redeploy.
 
 FRESHDESK_DOMAIN = os.environ.get("FRESHDESK_DOMAIN", "")
 FRESHDESK_API_KEY = os.environ.get("FRESHDESK_API_KEY", "")
