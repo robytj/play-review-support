@@ -149,5 +149,36 @@ def main():
     bot.run(DISCORD_BOT_TOKEN)
 
 
+def _run_in_thread():
+    """Runs the bot's asyncio loop in this (non-main) thread. Deliberately uses
+    bot.start() + a fresh event loop instead of bot.run() -- bot.run() installs
+    SIGINT/SIGTERM handlers via loop.add_signal_handler(), which only works in
+    the interpreter's main thread and would raise ValueError here."""
+    import asyncio
+    loop = asyncio.new_event_loop()
+    asyncio.set_event_loop(loop)
+    try:
+        loop.run_until_complete(bot.start(DISCORD_BOT_TOKEN))
+    except Exception as e:
+        print(f"[error] Discord bot crashed: {e!r}")
+
+
+def start_in_background_thread():
+    """Called from app/main.py's FastAPI startup hook -- per the spec, this is
+    ONE service, not two. Discord and the web widget must share the same SQLite
+    file, which only works if they're the same process/container. (Railway
+    volumes attach to a single service; splitting web/worker into separate
+    Railway services would give each its own disk and silently fork the KB/
+    conversation data in two.) No-ops if DISCORD_BOT_TOKEN is unset so the web
+    service still runs fine without a Discord bot configured."""
+    if not DISCORD_BOT_TOKEN:
+        print("[info] DISCORD_BOT_TOKEN not set -- Discord bot disabled, web service runs standalone")
+        return
+    import threading
+    t = threading.Thread(target=_run_in_thread, daemon=True, name="discord-bot")
+    t.start()
+    print("[info] Discord bot starting in background thread")
+
+
 if __name__ == "__main__":
     main()

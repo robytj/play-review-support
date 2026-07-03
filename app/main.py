@@ -20,6 +20,11 @@ def _startup():
     db.init_db()
     for table in ("kb_articles", "canned", "answer_cache"):
         __import__("app.vectorstore", fromlist=["ensure_vec_table"]).ensure_vec_table(table)
+    # One service, not two (spec section 1) -- the Discord bot runs in this same
+    # process/container so it shares this exact SQLite file, not a separate
+    # Railway service with its own disk. No-ops if DISCORD_BOT_TOKEN is unset.
+    from discord_bot.bot import start_in_background_thread
+    start_in_background_thread()
 
 
 class ChatRequest(BaseModel):
