@@ -114,9 +114,10 @@ async def on_message(message: discord.Message):
     if DISCORD_SHADOW_MODE:
         # Ingest the ticket and run it through the full router so it shows up
         # in the dashboard feed/queue exactly like a live answer would, but
-        # don't touch Discord at all -- no reply, no reaction, no thread, no
-        # escalation ping. For validating the pipeline against real tickets
-        # before trusting it to actually talk to players.
+        # don't post any answer/thread/escalation in Discord -- just react
+        # with 👀 on the ticket message so it's visible the bot is alive and
+        # actively watching, without it speaking yet. For validating the
+        # pipeline against real tickets before trusting it to talk to players.
         conv_id = router.get_or_create_conversation("discord", external_id)
         router._log_message(conv_id, "user", None, message.content)
         result = router.answer(message.content, conv_id)
@@ -124,6 +125,10 @@ async def on_message(message: discord.Message):
             f"[shadow] conv={conv_id} tier={result['tier']} escalate={result['escalate']} "
             f"would_reply={result['text'][:150]!r}"
         )
+        try:
+            await message.add_reaction("👀")
+        except discord.HTTPException as e:
+            print(f"[warn] couldn't add shadow-mode reaction ({e!r})")
         return
 
     # New question outside a thread -> open our own thread, but only when no
