@@ -82,13 +82,23 @@ DISCORD_GUILD_ID = os.environ.get("DISCORD_GUILD_ID", "")
 # treats any of them as staff.
 DISCORD_STAFF_ROLE_ID = os.environ.get("DISCORD_STAFF_ROLE_ID", "")
 DISCORD_ESCALATION_CHANNEL_ID = os.environ.get("DISCORD_ESCALATION_CHANNEL_ID", "")
-# The channel the bot actively listens in for new player questions (spec section 5:
-# "listens in your support channel(s), ticket threads, and DMs"). Threads created
-# under this channel, and DMs, are always in scope too. If unset, falls back to
-# listening in every channel the bot can see -- fine for a quick local test, NOT
-# fine for production (set this before inviting the bot to a real server with more
-# than one channel).
-DISCORD_TICKETS_CHANNEL_ID = os.environ.get("DISCORD_TICKETS_CHANNEL_ID", "")
+# The Discord *category* id the bot actively listens in (spec section 5: "listens
+# in your support channel(s), ticket threads, and DMs"). On this server, tickets
+# are opened by a separate bot (Ticket King) that creates a brand-new private
+# channel per ticket inside one category -- so this must be that category's id,
+# not a single channel id. Any channel whose category matches, any thread whose
+# parent channel's category matches, and all DMs are in scope. If unset, falls
+# back to listening in every channel the bot can see -- fine for a quick local
+# test, NOT fine for production.
+DISCORD_TICKETS_CATEGORY_ID = os.environ.get("DISCORD_TICKETS_CATEGORY_ID", "")
+
+# Shadow mode: the bot still ingests every ticket message and runs it through the
+# full router (so it shows up in the dashboard's feed/queue exactly like a live
+# answer would), but never touches Discord -- no reply, no reactions, no thread,
+# no escalation ping. For validating the pipeline against real tickets before
+# trusting it to actually talk to players. Flip to false once you've checked the
+# dashboard output looks right.
+DISCORD_SHADOW_MODE = os.environ.get("DISCORD_SHADOW_MODE", "false").strip().lower() in ("1", "true", "yes")
 
 FRESHDESK_DOMAIN = os.environ.get("FRESHDESK_DOMAIN", "")
 FRESHDESK_API_KEY = os.environ.get("FRESHDESK_API_KEY", "")

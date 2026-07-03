@@ -2,9 +2,14 @@
 app.router.answer() the web widget calls (imported directly, same codebase/deploy --
 no HTTP hop needed since this runs as a second process in the same Railway service).
 
-Flow: message in a tracked channel/thread or DM -> router.answer() -> reply in-thread.
-New question in a channel -> opens a thread (free ticketing, no ticket bot needed).
-Any staff message in a thread pauses the bot there; `!resume` un-pauses.
+Flow: message in a tracked channel/thread or DM -> router.answer() -> reply in-place.
+Tickets on this server are opened by a separate bot (Ticket King), which creates a
+brand-new private channel per ticket under one category -- so if DISCORD_TICKETS_
+CATEGORY_ID is set, we just reply directly in whatever ticket channel the question
+came from (no need to also spin up our own thread there). If it's unset (no external
+ticket bot configured), we fall back to opening our own thread per new question so
+this still works as free ticketing on a simpler server.
+Any staff message in a tracked channel/thread pauses the bot there; `!resume` un-pauses.
 Bot reacts to its own answers with 👍/👎; those reactions are logged as feedback.
 Tier-3 escalations ping the staff role in a private staff channel.
 """
@@ -19,7 +24,7 @@ from discord.ext import commands
 from app import db, router
 from app.config import (
     DISCORD_BOT_TOKEN, DISCORD_STAFF_ROLE_ID, DISCORD_ESCALATION_CHANNEL_ID,
-    DISCORD_TICKETS_CHANNEL_ID,
+    DISCORD_TICKETS_CATEGORY_ID, DISCORD_SHADOW_MODE,
 )
 
 intents = discord.Intents.default()
@@ -47,6 +52,23 @@ def _is_staff(member: discord.Member) -> bool:
     return any(str(r.id) in _STAFF_ROLE_IDS for r in getattr(member, "roles", []))
 
 
+def _in_tickets_scope(channel) -> bool:
+    """True if this channel/thread lives under DISCORD_TICKETS_CATEGORY_ID.
+    Tickets on this server are opened by a separate bot (Ticket King), which
+    creates one brand-new private channel per ticket inside a single category
+    -- so we match on category, not on a single fixed channel id. Threads
+    check their parent channel's category. Unset category -> no restriction."""
+    if not DISCORD_TICKETS_CATEGORY_ID:
+        return True
+    cat_id = getattr(channel, "category_id", None)
+    if cat_id is not None:
+        return str(cat_id) == DISCORD_TICKETS_CATEGORY_ID
+    parent = getattr(channel, "parent", None)  # threads expose their parent channel here
+    if parent is not None:
+        return str(getattr(parent, "category_id", "")) == DISCORD_TICKETS_CATEGORY_ID
+    return False
+
+
 @bot.event
 async def on_ready():
     print(f"[info] logged in as {bot.user} (id={bot.user.id})")
@@ -64,18 +86,11 @@ async def on_message(message: discord.Message):
     is_dm = isinstance(message.channel, discord.DMChannel)
     is_thread = isinstance(message.channel, discord.Thread)
 
-    # Scope: only actively answer in the configured tickets channel (+ threads
-    # opened under it) and in DMs -- spec section 5 ("listens in your support
-    # channel(s), ticket threads, and DMs"). Stays quiet everywhere else. If
-    # DISCORD_TICKETS_CHANNEL_ID is unset, no restriction is applied (fine for
-    # a quick local test, not for a real server with more than one channel).
-    if DISCORD_TICKETS_CHANNEL_ID and not is_dm:
-        if is_thread:
-            in_scope = str(getattr(message.channel, "parent_id", "")) == DISCORD_TICKETS_CHANNEL_ID
-        else:
-            in_scope = str(message.channel.id) == DISCORD_TICKETS_CHANNEL_ID
-        if not in_scope:
-            return
+    # Scope: only actively answer under the configured tickets category (+ its
+    # threads) and in DMs -- spec section 5 ("listens in your support
+    # channel(s), ticket threads, and DMs"). Stays quiet everywhere else.
+    if not is_dm and not _in_tickets_scope(message.channel):
+        return
 
     external_id = str(message.channel.id)
 
@@ -96,9 +111,27 @@ async def on_message(message: discord.Message):
     if convo and convo["status"] == "paused":
         return  # human has the wheel; !resume brings the bot back
 
-    # New question outside a thread -> open a thread so this becomes free ticketing.
+    if DISCORD_SHADOW_MODE:
+        # Ingest the ticket and run it through the full router so it shows up
+        # in the dashboard feed/queue exactly like a live answer would, but
+        # don't touch Discord at all -- no reply, no reaction, no thread, no
+        # escalation ping. For validating the pipeline against real tickets
+        # before trusting it to actually talk to players.
+        conv_id = router.get_or_create_conversation("discord", external_id)
+        router._log_message(conv_id, "user", None, message.content)
+        result = router.answer(message.content, conv_id)
+        print(
+            f"[shadow] conv={conv_id} tier={result['tier']} escalate={result['escalate']} "
+            f"would_reply={result['text'][:150]!r}"
+        )
+        return
+
+    # New question outside a thread -> open our own thread, but only when no
+    # external ticket bot/category is configured -- Ticket King already gives
+    # us a dedicated private channel per ticket in that case, so we just reply
+    # there directly instead of also nesting a thread inside it.
     target_channel = message.channel
-    if not is_dm and not is_thread:
+    if not is_dm and not is_thread and not DISCORD_TICKETS_CATEGORY_ID:
         try:
             thread = await message.create_thread(name=message.content[:80] or "Support question")
             target_channel = thread
@@ -107,6 +140,7 @@ async def on_message(message: discord.Message):
             print(f"[warn] couldn't create thread ({e!r}), replying inline")
 
     conv_id = router.get_or_create_conversation("discord", external_id)
+    router._log_message(conv_id, "user", None, message.content)
     await target_channel.trigger_typing() if hasattr(target_channel, "trigger_typing") else None
 
     result = router.answer(message.content, conv_id)
