@@ -101,6 +101,20 @@ def get_conn():
     return _local.conn
 
 
+def get_vec_status():
+    """None = not yet attempted on this thread's connection, True/False otherwise.
+    sqlite3.Connection objects don't support attribute assignment or weakrefs, so the
+    'has this connection had the sqlite-vec extension loaded' flag has to live here,
+    keyed to the same thread-local as the connection itself (see app/vectorstore.py --
+    extension loading is per-connection, not process-wide, so a naive global flag would
+    wrongly skip re-loading it on every new thread's fresh connection)."""
+    return getattr(_local, "vec_loaded", None)
+
+
+def mark_vec_status(loaded: bool):
+    _local.vec_loaded = loaded
+
+
 def init_db():
     conn = get_conn()
     conn.executescript(SCHEMA)

@@ -5,11 +5,7 @@ answer(question, conversation_id, context) -> dict:
 """
 from datetime import date
 
-from app import db, vectorstore, embeddings, llm
-from app.config import (
-    TAU_CANNED, TAU_ANSWER_CACHE, TAU_RETRIEVAL_CONFIDENCE,
-    RAG_TOP_K, SENSITIVE_KEYWORDS,
-)
+from app import db, vectorstore, embeddings, llm, config
 
 HOLDING_REPLY = (
     "I've flagged this for the team — you'll hear back here. Thanks for your patience!"
@@ -18,7 +14,7 @@ HOLDING_REPLY = (
 
 def _is_sensitive(question: str) -> bool:
     q = question.lower()
-    return any(kw in q for kw in SENSITIVE_KEYWORDS)
+    return any(kw in q for kw in config.SENSITIVE_KEYWORDS)
 
 
 def _log_message(conversation_id: int, role: str, tier, text: str, chunks=None) -> int:
@@ -42,7 +38,7 @@ def _tier0_canned(q_vec):
     if not hits:
         return None
     row_id, sim = hits[0]
-    if sim < TAU_CANNED:
+    if sim < config.TAU_CANNED:
         return None
     conn = db.get_conn()
     row = conn.execute("SELECT answer FROM canned WHERE id = ?", (row_id,)).fetchone()
@@ -54,7 +50,7 @@ def _tier1_answer_cache(q_vec):
     if not hits:
         return None
     row_id, sim = hits[0]
-    if sim < TAU_ANSWER_CACHE:
+    if sim < config.TAU_ANSWER_CACHE:
         return None
     conn = db.get_conn()
     row = conn.execute("SELECT answer FROM answer_cache WHERE id = ?", (row_id,)).fetchone()
@@ -66,8 +62,8 @@ def _tier1_answer_cache(q_vec):
 
 
 def _tier2_haiku_rag(question, q_vec):
-    hits = vectorstore.search("kb_articles", q_vec, top_k=RAG_TOP_K, where="status = 'published'")
-    if not hits or hits[0][1] < TAU_RETRIEVAL_CONFIDENCE:
+    hits = vectorstore.search("kb_articles", q_vec, top_k=config.RAG_TOP_K, where="status = 'published'")
+    if not hits or hits[0][1] < config.TAU_RETRIEVAL_CONFIDENCE:
         return None, None
     conn = db.get_conn()
     chunks = []

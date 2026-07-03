@@ -9,8 +9,10 @@ from fastapi import FastAPI
 from pydantic import BaseModel
 
 from app import db, router
+from app import dashboard_api
 
 app = FastAPI(title="PrimeRush SupportBot")
+app.include_router(dashboard_api.router)
 
 
 @app.on_event("startup")

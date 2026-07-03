@@ -1,33 +1,27 @@
-# Tunable knobs — start here per the spec (section 4 & 9), tune from dashboard data.
 thresholds:
-  tau_canned: 0.90          # Tier 0: canned similarity floor
-  tau_answer_cache: 0.87    # Tier 1: repeat-question cache similarity floor
-  tau_retrieval_confidence: 0.65   # below this, Tier 2 retrieval isn't trusted -> escalate to Tier 3
-
+  tau_canned: 0.9
+  tau_answer_cache: 0.87
+  tau_retrieval_confidence: 0.65
 rag:
   top_k: 4
   model: claude-3-5-haiku-latest
   max_tokens: 400
-
 embeddings:
   model: BAAI/bge-small-en-v1.5
   dim: 384
-
 escalation:
-  # Any of these substrings in the (lowercased) question forces Tier 3, regardless of retrieval confidence.
   sensitive_keywords:
-    - refund
-    - chargeback
-    - charge back
-    - account ban
-    - unban
-    - ban appeal
-    - legal
-    - lawsuit
-    - data deletion
-    - gdpr
-
+  - refund
+  - chargeback
+  - charge back
+  - account ban
+  - unban
+  - ban appeal
+  - legal
+  - lawsuit
+  - data deletion
+  - gdpr
 learning:
-  min_cluster_size: 3       # failed/escalated questions per cluster before drafting a KB article
+  min_cluster_size: 3
   canned_promotion_min_sends: 5
-  canned_promotion_min_positive_rate: 0.90
+  canned_promotion_min_positive_rate: 0.9

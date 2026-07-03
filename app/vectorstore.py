@@ -9,29 +9,42 @@ always written to BOTH paths so switching is transparent and nothing is ever los
 import struct
 import numpy as np
 
+from app import db as _db
 from app.db import get_conn
 from app.config import EMBEDDING_DIM
 
-_vec_available = None
+# Whether the sqlite_vec Python package + extension mechanism works AT ALL in this
+# environment -- an environment-level fact, safe to cache process-wide. Whether it's
+# been LOADED ON THIS SPECIFIC CONNECTION is a different question (extension loading
+# is per-connection, and connections are thread-local -- see app/db.py get_vec_status).
+_vec_mechanism_ok = None
 
 
 def _try_enable_vec(conn) -> bool:
-    global _vec_available
-    if _vec_available is not None:
-        return _vec_available
+    global _vec_mechanism_ok
+    cached = _db.get_vec_status()
+    if cached is not None:
+        return cached
+    if _vec_mechanism_ok is False:
+        _db.mark_vec_status(False)
+        return False
     try:
         import sqlite_vec
         conn.enable_load_extension(True)
         sqlite_vec.load(conn)
         conn.enable_load_extension(False)
-        _vec_available = True
-        print("[info] sqlite-vec loaded")
+        _vec_mechanism_ok = True
+        _db.mark_vec_status(True)
+        if cached is None:
+            print("[info] sqlite-vec loaded")
     except Exception as e:
-        print(f"[warn] sqlite-vec unavailable ({e!r}) -- using brute-force numpy "
-              f"cosine search fallback. Fine at KB-article/canned-response scale "
-              f"(hundreds-thousands of rows); revisit if that changes.")
-        _vec_available = False
-    return _vec_available
+        if _vec_mechanism_ok is None:
+            print(f"[warn] sqlite-vec unavailable ({e!r}) -- using brute-force numpy "
+                  f"cosine search fallback. Fine at KB-article/canned-response scale "
+                  f"(hundreds-thousands of rows); revisit if that changes.")
+        _vec_mechanism_ok = False
+        _db.mark_vec_status(False)
+    return _db.get_vec_status()
 
 
 def ensure_vec_table(table: str):
