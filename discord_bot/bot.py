@@ -2,19 +2,7 @@
 app.router.answer() the web widget calls (imported directly, same codebase/deploy --
 no HTTP hop needed since this runs as a second process in the same Railway service).
 
-PERMANENTLY READ-ONLY (2026-07-04): this bot never posts, replies, or DMs on
-Discord. It only reads messages, drafts a suggested response via router.answer(),
-and logs it -- staff read the suggestion on the Support tab's ticket grid and
-reply to the player in Discord themselves. The only thing it ever writes back to
-Discord is an emoji reaction (👀 on a new ticket, ✅ on `!resume`), never message
-text. This replaces an earlier design that had a `shadow_mode` toggle meant to be
-flipped off once trusted -- that toggle is gone on purpose: on 2026-07-04 an env
-var rename briefly disabled channel scoping on a version of this bot that COULD
-reply, and it spammed the live server with a repeated holding message on every
-message in every channel it could see (see project memory / incident notes).
-Making read-only unconditional means there is no code path left that can ever
-repeat that failure mode, regardless of config or env state.
-
+Flow: message in a tracked channel/thread or DM -> router.answer() -> reply in-place.
 Tickets on this server are opened by a separate bot (Ticket King), which creates a
 brand-new private channel per ticket under one category and posts the ticket itself
 as an embed *from its own bot account* -- so we can't blanket-ignore bot-authored
@@ -22,16 +10,13 @@ messages like a simpler setup would; instead we ignore only our own messages, an
 for any other bot/app message we try to parse it as a Ticket King card (see
 _parse_ticket_king_card) and ignore it if it doesn't look like one.
 
-Any staff message in a tracked channel/thread pauses suggestion generation there
-(no point spending a Haiku call on a conversation a human already has); `!resume`
-un-pauses it. Tier-3 escalations are marked in the DB (app/router.py) so the
-conversation shows up in the Support tab's escalation queue -- no Discord ping,
-since pinging would itself be a message send.
-
-Feedback (👍/👎ing a reply) used to be collected in Discord because the bot's own
-message was there to react to. Now that nothing gets posted, that path is gone --
-if you want thumbs-up/down on suggested responses, add it as a button in the
-Support tab (POST /api/feedback) instead.
+If DISCORD_TICKETS_CATEGORY_ID is set, we just reply directly in whatever ticket
+channel the question came from (no need to also spin up our own thread there). If
+it's unset (no external ticket bot configured), we fall back to opening our own
+thread per new question so this still works as free ticketing on a simpler server.
+Any staff message in a tracked channel/thread pauses the bot there; `!resume` un-pauses.
+Bot reacts to its own answers with 👍/👎; those reactions are logged as feedback.
+Tier-3 escalations ping the staff role in a private staff channel.
 """
 import re
 import sys
@@ -43,7 +28,11 @@ import discord
 from discord.ext import commands
 
 from app import db, router
-from app.config import DISCORD_BOT_TOKEN, DISCORD_STAFF_ROLE_ID, DISCORD_TICKETS_CATEGORY_ID
+from app import config as app_config
+from app.config import (
+    DISCORD_BOT_TOKEN, DISCORD_STAFF_ROLE_ID, DISCORD_ESCALATION_CHANNEL_ID,
+    DISCORD_TICKETS_CATEGORY_ID,
+)
 
 intents = discord.Intents.default()
 intents.message_content = True
@@ -51,10 +40,16 @@ intents.members = True
 
 bot = commands.Bot(command_prefix="!", intents=intents)
 
+# in-memory cache of "this discord message id -> supportbot message_id" for reaction feedback.
+# Small and short-lived (only recent bot replies matter) -- fine as a process-local dict;
+# unlike scan_jobs in play-review-responder this isn't shared state across workers because
+# the Discord bot only ever runs as a single process (one gateway connection per bot token).
+_reply_message_map: dict[int, int] = {}
+
 
 # DISCORD_STAFF_ROLE_ID may hold more than one role id, comma-separated (e.g. a
 # "Moderator" role and a separate "Staff Volunteer" role) -- either one counts as
-# staff for pausing suggestion generation.
+# staff for pausing the bot and getting pinged on Tier-3 escalations.
 _STAFF_ROLE_IDS = {rid.strip() for rid in DISCORD_STAFF_ROLE_ID.split(",") if rid.strip()}
 
 
@@ -94,9 +89,7 @@ def _in_tickets_scope(channel) -> bool:
     Tickets on this server are opened by a separate bot (Ticket King), which
     creates one brand-new private channel per ticket inside a single category
     -- so we match on category, not on a single fixed channel id. Threads
-    check their parent channel's category. Unset category -> no restriction
-    (fine for a quick local test with a simpler server; on the live server
-    this should always be set)."""
+    check their parent channel's category. Unset category -> no restriction."""
     if not DISCORD_TICKETS_CATEGORY_ID:
         return True
     cat_id = getattr(channel, "category_id", None)
@@ -110,7 +103,7 @@ def _in_tickets_scope(channel) -> bool:
 
 @bot.event
 async def on_ready():
-    print(f"[info] logged in as {bot.user} (id={bot.user.id}) -- read-only mode, no auto-replies")
+    print(f"[info] logged in as {bot.user} (id={bot.user.id})")
 
 
 @bot.event
@@ -120,7 +113,7 @@ async def on_message(message: discord.Message):
 
     if message.author.bot:
         if bot.user and message.author.id == bot.user.id:
-            return  # never process our own messages
+            return  # never react to our own messages
         ticket_player_id, ticket_question = _parse_ticket_king_card(message)
         if not ticket_player_id and not ticket_question:
             return  # some other bot/app's message, not a ticket card -- ignore
@@ -130,10 +123,11 @@ async def on_message(message: discord.Message):
             return
 
     is_dm = isinstance(message.channel, discord.DMChannel)
+    is_thread = isinstance(message.channel, discord.Thread)
 
-    # Scope: only actively watch the configured tickets category (+ its threads)
-    # and DMs -- spec section 5 ("listens in your support channel(s), ticket
-    # threads, and DMs"). Stays quiet everywhere else.
+    # Scope: only actively answer under the configured tickets category (+ its
+    # threads) and in DMs -- spec section 5 ("listens in your support
+    # channel(s), ticket threads, and DMs"). Stays quiet everywhere else.
     if not is_dm and not _in_tickets_scope(message.channel):
         return
 
@@ -145,8 +139,7 @@ async def on_message(message: discord.Message):
         (external_id,),
     ).fetchone()
 
-    # Staff talking in an existing thread -> pause suggestion generation there,
-    # a human already has the wheel.
+    # Staff talking in an existing thread -> pause the bot there, don't auto-answer.
     if convo and not is_dm and isinstance(message.author, discord.Member) and _is_staff(message.author):
         if convo["status"] == "open":
             conn.execute("UPDATE conversations SET status='paused' WHERE id=?", (convo["id"],))
@@ -157,7 +150,8 @@ async def on_message(message: discord.Message):
     if convo and convo["status"] in ("paused", "escalated"):
         # human has the wheel -- 'paused' from a staff reply, 'escalated' because
         # router.answer() already hit tier 3 once on this conversation. Either way
-        # stop generating new suggestions until !resume brings it back.
+        # stay silent instead of repeating the same holding reply on every new
+        # message; !resume brings the bot back for both cases.
         return
 
     # The actual question to route: Ticket King's card carries it in a field
@@ -171,22 +165,79 @@ async def on_message(message: discord.Message):
             router.get_or_create_conversation("discord", external_id, player_id=ticket_player_id)
         return
 
-    # Ingest the ticket and run it through the full router so the suggested
-    # response shows up in the Support tab's ticket grid exactly like a live
-    # answer would -- but never post anything back to Discord except a 👀
-    # reaction, so staff can see the bot is alive and watching without it ever
-    # speaking for itself.
+    if app_config.DISCORD_SHADOW_MODE:
+        # Ingest the ticket and run it through the full router so it shows up
+        # in the dashboard feed/queue exactly like a live answer would, but
+        # don't post any answer/thread/escalation in Discord -- just react
+        # with 👀 on the ticket message so it's visible the bot is alive and
+        # actively watching, without it speaking yet. For validating the
+        # pipeline against real tickets before trusting it to talk to players.
+        conv_id = router.get_or_create_conversation("discord", external_id, player_id=ticket_player_id)
+        router._log_message(conv_id, "user", None, question_text)
+        result = router.answer(question_text, conv_id)
+        print(
+            f"[shadow] conv={conv_id} player_id={ticket_player_id!r} tier={result['tier']} "
+            f"escalate={result['escalate']} would_reply={result['text'][:150]!r}"
+        )
+        try:
+            await message.add_reaction("👀")
+        except discord.HTTPException as e:
+            print(f"[warn] couldn't add shadow-mode reaction ({e!r})")
+        return
+
+    # New question outside a thread -> open our own thread, but only when no
+    # external ticket bot/category is configured -- Ticket King already gives
+    # us a dedicated private channel per ticket in that case, so we just reply
+    # there directly instead of also nesting a thread inside it.
+    target_channel = message.channel
+    if not is_dm and not is_thread and not DISCORD_TICKETS_CATEGORY_ID:
+        try:
+            thread = await message.create_thread(name=question_text[:80] or "Support question")
+            target_channel = thread
+            external_id = str(thread.id)
+        except discord.HTTPException as e:
+            print(f"[warn] couldn't create thread ({e!r}), replying inline")
+
     conv_id = router.get_or_create_conversation("discord", external_id, player_id=ticket_player_id)
     router._log_message(conv_id, "user", None, question_text)
+    await target_channel.trigger_typing() if hasattr(target_channel, "trigger_typing") else None
+
     result = router.answer(question_text, conv_id)
-    print(
-        f"[suggest] conv={conv_id} player_id={ticket_player_id!r} tier={result['tier']} "
-        f"escalate={result['escalate']} suggested={result['text'][:150]!r}"
-    )
-    try:
-        await message.add_reaction("👀")
-    except discord.HTTPException as e:
-        print(f"[warn] couldn't add reaction ({e!r})")
+    sent = await target_channel.send(result["text"])
+    _reply_message_map[sent.id] = result["message_id"]
+
+    for emoji in ("👍", "👎"):
+        try:
+            await sent.add_reaction(emoji)
+        except discord.HTTPException:
+            pass
+
+    if result["escalate"] and DISCORD_ESCALATION_CHANNEL_ID:
+        chan = bot.get_channel(int(DISCORD_ESCALATION_CHANNEL_ID))
+        if chan:
+            role_mention = " ".join(f"<@&{rid}>" for rid in _STAFF_ROLE_IDS) if _STAFF_ROLE_IDS else "@here"
+            who = f"player `{ticket_player_id}`" if ticket_player_id else message.author.mention
+            await chan.send(
+                f"{role_mention} Tier-3 escalation from {who}: "
+                f"{sent.jump_url}\n> {question_text[:200]}"
+            )
+
+
+@bot.event
+async def on_raw_reaction_add(payload: discord.RawReactionActionEvent):
+    if payload.user_id == bot.user.id:
+        return
+    if str(payload.emoji) not in ("👍", "👎"):
+        return
+    message_id = _reply_message_map.get(payload.message_id)
+    if message_id is None:
+        return
+    signal = "thumbs_up" if str(payload.emoji) == "👍" else "thumbs_down"
+    with db.tx() as conn:
+        conn.execute("INSERT INTO feedback (message_id, signal) VALUES (?, ?)", (message_id, signal))
+    from datetime import date
+    db.bump_metric(date.today().isoformat(), signal, 1)
+    print(f"[info] feedback {signal} on message {message_id}")
 
 
 @bot.command(name="resume")
@@ -199,12 +250,7 @@ async def resume(ctx: commands.Context):
             "UPDATE conversations SET status='open' WHERE channel='discord' AND external_id=?",
             (external_id,),
         )
-    # Acknowledge with a reaction, not a sent message -- the bot never authors
-    # message text in Discord, even for admin utility commands.
-    try:
-        await ctx.message.add_reaction("✅")
-    except discord.HTTPException as e:
-        print(f"[warn] couldn't add resume reaction ({e!r})")
+    await ctx.send("Bot resumed for this thread.")
 
 
 def main():
@@ -246,7 +292,7 @@ def start_in_background_thread():
     import threading
     t = threading.Thread(target=_run_in_thread, daemon=True, name="discord-bot")
     t.start()
-    print("[info] Discord bot starting in background thread (read-only mode)")
+    print("[info] Discord bot starting in background thread")
 
 
 if __name__ == "__main__":
