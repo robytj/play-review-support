@@ -147,8 +147,12 @@ async def on_message(message: discord.Message):
             print(f"[info] conversation {convo['id']} paused by staff message")
         return
 
-    if convo and convo["status"] == "paused":
-        return  # human has the wheel; !resume brings the bot back
+    if convo and convo["status"] in ("paused", "escalated"):
+        # human has the wheel -- 'paused' from a staff reply, 'escalated' because
+        # router.answer() already hit tier 3 once on this conversation. Either way
+        # stay silent instead of repeating the same holding reply on every new
+        # message; !resume brings the bot back for both cases.
+        return
 
     # The actual question to route: Ticket King's card carries it in a field
     # (message.content on that message is usually just an @-mention), a plain

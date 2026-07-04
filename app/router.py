@@ -33,6 +33,22 @@ def _bump(tier: int):
     db.bump_metric(today, f"tier{tier}_count", 1)
 
 
+def _mark_escalated(conversation_id: int):
+    """Once a conversation hits tier 3, a human needs to look at it -- stop
+    auto-replying to every subsequent message in it until they resolve it (or,
+    on Discord, !resume it). Without this, a thin/empty KB means every single
+    message in the conversation re-triggers the same generic holding reply
+    forever, which is the exact runaway-spam failure mode from the 2026-07-04
+    incident (bot repeating "I've flagged this for the team..." on every
+    message, including non-questions). Only touches 'open' so it never
+    clobbers a staff-set 'paused' status or an already-'resolved' conversation."""
+    with db.tx() as conn:
+        conn.execute(
+            "UPDATE conversations SET status='escalated' WHERE id=? AND status='open'",
+            (conversation_id,),
+        )
+
+
 def _tier0_canned(q_vec):
     hits = vectorstore.search("canned", q_vec, top_k=1)
     if not hits:
@@ -91,6 +107,7 @@ def answer(question: str, conversation_id: int) -> dict:
     if _is_sensitive(question):
         _bump(3)
         mid = _log_message(conversation_id, "bot", 3, HOLDING_REPLY)
+        _mark_escalated(conversation_id)
         return {"tier": 3, "text": HOLDING_REPLY, "message_id": mid, "escalate": True}
 
     canned = _tier0_canned(q_vec)
@@ -113,6 +130,7 @@ def answer(question: str, conversation_id: int) -> dict:
 
     _bump(3)
     mid = _log_message(conversation_id, "bot", 3, HOLDING_REPLY)
+    _mark_escalated(conversation_id)
     return {"tier": 3, "text": HOLDING_REPLY, "message_id": mid, "escalate": True}
 
 
