@@ -6,15 +6,14 @@ and it can't download the `fastembed` model either. Both scripts are written and
 tested for structure, just never run against real data. Run these from your laptop
 or Railway's console instead.
 
-## 1. Get a local checkout with the latest code
+## 1. Open a terminal in this folder
+
+This `PrimeRush-Bot` folder on your Mac is the actual git working copy (same
+files Claude edits directly) — there's no separate clone to pull first.
 
 ```bash
-cd /Users/roby1/github/robytj/play-review-support   # wherever you clone PrimeRush-Bot locally
-git pull origin master
+cd /Users/roby1/Documents/Claude/Projects/PrimeRush-Bot
 ```
-
-(This assumes you've pushed the `ac1ed7f` commit from this session first — see the
-main chat response for the exact push command.)
 
 ## 2. Set up a virtualenv and install deps
 
