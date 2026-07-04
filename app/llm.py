@@ -60,11 +60,20 @@ def answer_with_rag(question: str, kb_chunks: list[dict]) -> tuple[str, dict]:
     return text, usage
 
 
-def distill_cluster_to_article(sample_texts: list[str], model: str = "claude-3-5-haiku-latest") -> dict:
+def distill_cluster_to_article(sample_texts: list[str], model: str = None) -> dict:
     """Used by build_kb.py / learn.py: turns a cluster of raw ticket texts into a
     draft KB article. Runs one call per cluster -- swap client.messages.create for
     client.messages.batches.create in build_kb.py once ticket volume justifies the
-    50%-off Batch API (spec section 3)."""
+    50%-off Batch API (spec section 3).
+
+    Defaults to RAG_MODEL (config.yaml's rag.model) instead of a separately
+    hardcoded model string -- there was a real incident from this: the hardcoded
+    default here (claude-3-5-haiku-latest) had been retired by Anthropic and every
+    build_kb.py call 404'd with a model-not-found error, even though config.yaml
+    had already been updated with a working model name for answer_with_rag()
+    above. One source of truth now; pass `model=` explicitly only to override it
+    for a specific call."""
+    model = model or RAG_MODEL
     client = _get_client()
     joined = "\n\n---\n\n".join(sample_texts[:8])
     resp = client.messages.create(
