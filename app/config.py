@@ -38,13 +38,6 @@ def _apply(cfg: dict):
     g["CANNED_PROMOTION_MIN_SENDS"] = cfg["learning"]["canned_promotion_min_sends"]
     g["CANNED_PROMOTION_MIN_POSITIVE_RATE"] = cfg["learning"]["canned_promotion_min_positive_rate"]
 
-    # Shadow mode lives in config.yaml (not env) specifically so the Support tab's
-    # toggle can flip it live via POST /api/dashboard/settings -> write_settings()
-    # -> reload(), no redeploy needed. discord_bot/bot.py must reference this via
-    # `from app import config; config.DISCORD_SHADOW_MODE` at call time, same
-    # hot-reload rule as the thresholds below.
-    g["DISCORD_SHADOW_MODE"] = bool(cfg.get("discord", {}).get("shadow_mode", False))
-
 
 def reload():
     """Re-reads config.yaml from disk and updates the live module globals.
@@ -62,11 +55,10 @@ def get_thresholds_dict() -> dict:
         "tau_retrieval_confidence": TAU_RETRIEVAL_CONFIDENCE,
         "rag_top_k": RAG_TOP_K,
         "sensitive_keywords": SENSITIVE_KEYWORDS,
-        "shadow_mode": DISCORD_SHADOW_MODE,
     }
 
 
-def write_settings(thresholds: dict = None, sensitive_keywords: list = None, shadow_mode: bool = None):
+def write_settings(thresholds: dict = None, sensitive_keywords: list = None):
     """Used by POST /api/dashboard/settings. Rewrites config.yaml (preserving
     everything else) then reload()s so it takes effect immediately."""
     cfg = _load_yaml()
@@ -74,8 +66,6 @@ def write_settings(thresholds: dict = None, sensitive_keywords: list = None, sha
         cfg["thresholds"].update(thresholds)
     if sensitive_keywords is not None:
         cfg["escalation"]["sensitive_keywords"] = sensitive_keywords
-    if shadow_mode is not None:
-        cfg.setdefault("discord", {})["shadow_mode"] = bool(shadow_mode)
     with open(CONFIG_YAML_PATH, "w") as f:
         yaml.safe_dump(cfg, f, sort_keys=False)
     return reload()
@@ -91,20 +81,19 @@ DISCORD_GUILD_ID = os.environ.get("DISCORD_GUILD_ID", "")
 # separate Staff Volunteer role) -- discord_bot/bot.py splits on comma and
 # treats any of them as staff.
 DISCORD_STAFF_ROLE_ID = os.environ.get("DISCORD_STAFF_ROLE_ID", "")
+# Currently unused -- the bot is permanently read-only (discord_bot/bot.py) and
+# never sends an escalation ping, since a ping would itself be a message send.
+# Kept in case a future lightweight staff-notification path is added deliberately.
 DISCORD_ESCALATION_CHANNEL_ID = os.environ.get("DISCORD_ESCALATION_CHANNEL_ID", "")
-# The Discord *category* id the bot actively listens in (spec section 5: "listens
+# The Discord *category* id the bot actively watches (spec section 5: "listens
 # in your support channel(s), ticket threads, and DMs"). On this server, tickets
 # are opened by a separate bot (Ticket King) that creates a brand-new private
 # channel per ticket inside one category -- so this must be that category's id,
 # not a single channel id. Any channel whose category matches, any thread whose
 # parent channel's category matches, and all DMs are in scope. If unset, falls
-# back to listening in every channel the bot can see -- fine for a quick local
+# back to watching every channel the bot can see -- fine for a quick local
 # test, NOT fine for production.
 DISCORD_TICKETS_CATEGORY_ID = os.environ.get("DISCORD_TICKETS_CATEGORY_ID", "")
-
-# NOTE: DISCORD_SHADOW_MODE (whether the bot ingests tickets silently vs.
-# actually replies) is set in _apply() from config.yaml, not from an env var
-# here -- that's what lets the Support tab's toggle flip it live, no redeploy.
 
 FRESHDESK_DOMAIN = os.environ.get("FRESHDESK_DOMAIN", "")
 FRESHDESK_API_KEY = os.environ.get("FRESHDESK_API_KEY", "")

@@ -246,7 +246,4 @@ def get_settings():
 def post_settings(payload: dict):
     thresholds = payload.get("thresholds")
     sensitive_keywords = payload.get("sensitive_keywords")
-    shadow_mode = payload.get("shadow_mode")
-    return config.write_settings(
-        thresholds=thresholds, sensitive_keywords=sensitive_keywords, shadow_mode=shadow_mode
-    )
+    return config.write_settings(thresholds=thresholds, sensitive_keywords=sensitive_keywords)

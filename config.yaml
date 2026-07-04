@@ -25,5 +25,3 @@ learning:
   min_cluster_size: 3
   canned_promotion_min_sends: 5
   canned_promotion_min_positive_rate: 0.9
-discord:
-  shadow_mode: true
