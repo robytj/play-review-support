@@ -16,10 +16,26 @@ CREATE TABLE IF NOT EXISTS kb_articles (
     answer TEXT NOT NULL,
     tags TEXT DEFAULT '',
     status TEXT NOT NULL DEFAULT 'draft',   -- draft | published
+    category TEXT DEFAULT '',                -- one of app/config.py KB_CATEGORIES; '' = not yet categorized
     source TEXT DEFAULT '',                  -- e.g. freshdesk ticket ids, comma-separated
     embedding BLOB,                          -- fallback brute-force store (always kept, cheap insurance)
     created_at TEXT DEFAULT (datetime('now')),
     updated_at TEXT DEFAULT (datetime('now'))
+);
+
+-- Cached machine translations of a kb_articles row, keyed by (article_id, lang).
+-- Generated on-demand the first time the SupportKB tab asks for a given language
+-- (see app/llm.py translate_article() + the /kb/{id}/translate/{lang} endpoint),
+-- then served from here after that. Invalidated (deleted) whenever the source
+-- article's title/symptom/answer is edited, so a stale translation is never shown.
+CREATE TABLE IF NOT EXISTS kb_translations (
+    article_id INTEGER NOT NULL REFERENCES kb_articles(id),
+    lang TEXT NOT NULL,             -- 'pt' | 'es' | 'ar'
+    title TEXT NOT NULL,
+    symptom TEXT NOT NULL,
+    answer TEXT NOT NULL,
+    created_at TEXT DEFAULT (datetime('now')),
+    PRIMARY KEY (article_id, lang)
 );
 
 CREATE TABLE IF NOT EXISTS canned (
@@ -131,6 +147,11 @@ def _migrate(conn):
     cols = {row["name"] for row in conn.execute("PRAGMA table_info(conversations)").fetchall()}
     if "player_id" not in cols:
         conn.execute("ALTER TABLE conversations ADD COLUMN player_id TEXT")
+        conn.commit()
+
+    kb_cols = {row["name"] for row in conn.execute("PRAGMA table_info(kb_articles)").fetchall()}
+    if "category" not in kb_cols:
+        conn.execute("ALTER TABLE kb_articles ADD COLUMN category TEXT DEFAULT ''")
         conn.commit()
 
 

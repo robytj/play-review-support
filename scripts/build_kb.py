@@ -75,12 +75,12 @@ def cluster_docs(docs: list[dict]) -> list[list[int]]:
     return clusters
 
 
-def store_article(title, symptom, answer, tags, source_ids) -> int:
+def store_article(title, symptom, answer, tags, source_ids, category="") -> int:
     with db.tx() as conn:
         cur = conn.execute(
-            "INSERT INTO kb_articles (title, symptom, answer, tags, status, source) "
-            "VALUES (?, ?, ?, ?, 'draft', ?)",
-            (title, symptom, answer, tags, ",".join(str(s) for s in source_ids)),
+            "INSERT INTO kb_articles (title, symptom, answer, tags, status, category, source) "
+            "VALUES (?, ?, ?, ?, 'draft', ?, ?)",
+            (title, symptom, answer, tags, category, ",".join(str(s) for s in source_ids)),
         )
         article_id = cur.lastrowid
     vec = embeddings.embed(f"{title}\n{symptom}")
@@ -128,7 +128,7 @@ def main():
             continue
         source_ids = [m["ticket_id"] for m in members]
         article_id = store_article(fields["title"], fields["symptom"], fields["answer"],
-                                    fields["tags"], source_ids)
+                                    fields["tags"], source_ids, fields.get("category", ""))
         created += 1
         print(f"[info]   -> draft article #{article_id}: {fields['title']}")
 

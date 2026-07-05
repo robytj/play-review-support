@@ -120,3 +120,32 @@ SUPPORT_SERVICE_API_KEY = os.environ.get("SUPPORT_SERVICE_API_KEY", "")
 
 DB_PATH = os.environ.get("DB_PATH", str(ROOT / "data" / "supportbot.db"))
 Path(DB_PATH).parent.mkdir(parents=True, exist_ok=True)
+
+# Fixed KB category list for the SupportKB tab (play_reviewer.py). Capped at 8 per
+# the original request. Adapted from Supercell's Clash of Clans support portal
+# taxonomy (Account / Purchases / Gameplay / Troubleshooting / Safe & Fair Play --
+# https://support.supercell.com/clash-of-clans/en/), plus PrimeRush-specific asks
+# ("Payments", "Updates") and a catch-all bucket so nothing is ever miscategorized
+# into the wrong bucket just because it doesn't fit cleanly. Both app/llm.py's
+# distill_cluster_to_article() (LLM-assigned, for new articles) and
+# app/dashboard_api.py's keyword-heuristic backfill (for older rows with no
+# category, no LLM call needed) must only ever emit one of these exact strings.
+KB_CATEGORIES = [
+    "Account & Login",
+    "Payments & Purchases",
+    "Gameplay & Progression",
+    "Bans & Fair Play",
+    "Technical Issues",
+    "Updates & Patches",
+    "Rewards & Events",
+    "General",
+]
+KB_DEFAULT_CATEGORY = "General"
+
+# Languages the SupportKB tab offers on-demand translation into. Keyed by the
+# two-letter code the /api/dashboard/kb/{id}/translate/{lang} endpoint expects.
+KB_TRANSLATION_LANGS = {
+    "pt": "Portuguese",
+    "es": "Spanish",
+    "ar": "Arabic",
+}
