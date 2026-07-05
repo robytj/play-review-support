@@ -107,14 +107,26 @@ def queue():
 
 # ---------------------------------------------------------------------------- kb --
 
+_KB_LIST_COLUMNS = "id, title, symptom, answer, tags, status, source, created_at, updated_at"
+
+
 @router.get("/kb", dependencies=[Depends(require_service_key)])
 def list_kb(status: str = "all"):
+    # Deliberately excludes `embedding` -- it's a raw packed-float32 BLOB (see
+    # app/vectorstore.py), and FastAPI's jsonable_encoder tries to UTF-8 decode
+    # any `bytes` value it finds, which crashes with UnicodeDecodeError on binary
+    # data. list_canned() below already excludes it the same way; this endpoint
+    # just never had rows with a real embedding until the KB was actually built,
+    # so the bug stayed latent.
     conn = db.get_conn()
     if status == "all":
-        rows = conn.execute("SELECT * FROM kb_articles ORDER BY updated_at DESC").fetchall()
+        rows = conn.execute(
+            f"SELECT {_KB_LIST_COLUMNS} FROM kb_articles ORDER BY updated_at DESC"
+        ).fetchall()
     else:
         rows = conn.execute(
-            "SELECT * FROM kb_articles WHERE status = ? ORDER BY updated_at DESC", (status,)
+            f"SELECT {_KB_LIST_COLUMNS} FROM kb_articles WHERE status = ? ORDER BY updated_at DESC",
+            (status,),
         ).fetchall()
     return [dict(r) for r in rows]
 
