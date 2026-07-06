@@ -28,6 +28,20 @@ def _get_client():
     return _client
 
 
+def _system_prompt() -> str:
+    """Base system prompt + the Phase-7 tone style block, if one has been built. The
+    block is a single cached row (app/tone.get_style_block) — one indexed read, never a
+    per-call scan of the suggestions table — and it's concatenated into the SAME system
+    text so Anthropic prompt-caching still covers it. Empty until the first
+    'Refresh tone examples'; behaviour is identical to before when empty."""
+    try:
+        from app import tone
+        block = tone.get_style_block()
+    except Exception:
+        block = ""
+    return f"{SYSTEM_PROMPT}\n\n{block}" if block else SYSTEM_PROMPT
+
+
 def answer_with_rag(question: str, kb_chunks: list[dict]) -> tuple[str, dict]:
     """kb_chunks: [{"title":..., "answer":...}, ...]. Returns (answer_text, usage_dict)."""
     context = "\n\n".join(
@@ -40,7 +54,7 @@ def answer_with_rag(question: str, kb_chunks: list[dict]) -> tuple[str, dict]:
         system=[
             {
                 "type": "text",
-                "text": SYSTEM_PROMPT,
+                "text": _system_prompt(),
                 "cache_control": {"type": "ephemeral"},
             }
         ],

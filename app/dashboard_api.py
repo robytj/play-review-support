@@ -15,7 +15,7 @@ from datetime import date, timedelta
 
 from fastapi import APIRouter, Depends, HTTPException, Header
 
-from app import db, embeddings, vectorstore, config, llm
+from app import db, embeddings, vectorstore, config, llm, tone
 
 router = APIRouter(prefix="/api/dashboard")
 
@@ -565,6 +565,30 @@ def metrics(days: int = 7):
         if total_msgs else None
     )
     return {"daily": rows, "totals": totals}
+
+
+# -------------------------------------------------------------- tone (Phase 7) --
+
+@router.get("/tone", dependencies=[Depends(require_service_key)])
+def tone_stats():
+    """Current cached tone style block stats (counts, size, when built) + a preview.
+    Powers the 'Refresh tone examples' card in Support Settings."""
+    stats = tone.get_stats()
+    block = tone.get_style_block()
+    stats["preview"] = block[:1200]
+    stats["active"] = bool(block)
+    return stats
+
+
+@router.post("/tone/refresh", dependencies=[Depends(require_service_key)])
+def tone_refresh(payload: dict | None = None):
+    """Rebuild the tone style block from the current suggestions corpus (correction
+    pairs + staff replies) and cache it. Bounded selection, not a per-call query.
+    Optional payload: {n_pairs, m_staff} to override the defaults."""
+    payload = payload or {}
+    n_pairs = int(payload.get("n_pairs", tone.DEFAULT_N_PAIRS))
+    m_staff = int(payload.get("m_staff", tone.DEFAULT_M_STAFF))
+    return tone.build_style_block(n_pairs=n_pairs, m_staff=m_staff)
 
 
 # ----------------------------------------------------------------------- settings --

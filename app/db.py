@@ -223,6 +223,21 @@ def _migrate(conn):
             created_at TEXT DEFAULT (datetime('now')),
             PRIMARY KEY (suggestion_id, target_lang)
         );
+
+        -- Phase 7 tone-learning (PHASE_6_7_SPEC): a SINGLE cached, pre-rendered style
+        -- block built from the suggestions corpus (correction pairs + real staff replies).
+        -- app/llm.py answer_with_rag() reads this one row and prepends it to the cached
+        -- system prompt so the RAG voice mirrors how support actually writes. Rebuilt
+        -- on demand by the "Refresh tone examples" button (app/tone.build_style_block),
+        -- NEVER queried per-call from the whole suggestions table. id is pinned to 1.
+        CREATE TABLE IF NOT EXISTS tone_cache (
+            id INTEGER PRIMARY KEY CHECK (id = 1),
+            style_block TEXT NOT NULL DEFAULT '',
+            n_pairs INTEGER DEFAULT 0,
+            n_staff INTEGER DEFAULT 0,
+            chars INTEGER DEFAULT 0,
+            built_at TEXT
+        );
         """
     )
     conn.commit()
