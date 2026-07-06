@@ -155,9 +155,13 @@ def _admin_url(player_id: str | None) -> str | None:
 def list_suggestions(source: str | None = None, origin: str | None = None,
                      tier: int | None = None, status: str | None = None, limit: int = 200):
     """Joined conversations + suggestions rows for the Ticket Review grid.
-    Filters: source (discord|freshdesk|email), origin (backfill|live), tier, status."""
+    Filters: source (discord|freshdesk|email), origin (backfill|live), tier, status.
+    Shows only the LATEST suggestion per ticket (superseded re-run rows stay in the
+    DB as training data but are hidden here, so the grid is one row per ticket)."""
     conn = db.get_conn()
-    where, params = [], []
+    # restrict to the newest suggestion per conversation
+    where = ["s.id = (SELECT MAX(s2.id) FROM suggestions s2 WHERE s2.conversation_id = s.conversation_id)"]
+    params = []
     if source:
         where.append("s.source = ?"); params.append(source)
     if origin:
@@ -166,7 +170,7 @@ def list_suggestions(source: str | None = None, origin: str | None = None,
         where.append("s.tier = ?"); params.append(tier)
     if status:
         where.append("s.status = ?"); params.append(status)
-    where_sql = ("WHERE " + " AND ".join(where)) if where else ""
+    where_sql = "WHERE " + " AND ".join(where)
     params.append(limit)
     rows = conn.execute(
         f"""
@@ -235,12 +239,16 @@ def reject_suggestion(suggestion_id: int):
 
 @router.get("/suggestions/summary", dependencies=[Depends(require_service_key)])
 def suggestions_summary():
-    """Counts by source x status x tier for the review grid's section headers/filters."""
+    """Counts by source x status x tier for the review grid's section headers/filters.
+    Counts only the LATEST suggestion per ticket (matches what the grid shows) so
+    superseded re-run rows don't inflate the tab badges."""
     conn = db.get_conn()
+    latest = ("FROM suggestions s WHERE s.id = "
+              "(SELECT MAX(s2.id) FROM suggestions s2 WHERE s2.conversation_id = s.conversation_id)")
     by_source = [dict(r) for r in conn.execute(
-        "SELECT source, status, COUNT(*) n FROM suggestions GROUP BY source, status").fetchall()]
+        f"SELECT s.source AS source, s.status AS status, COUNT(*) n {latest} GROUP BY s.source, s.status").fetchall()]
     by_tier = [dict(r) for r in conn.execute(
-        "SELECT tier, COUNT(*) n FROM suggestions GROUP BY tier ORDER BY tier").fetchall()]
+        f"SELECT s.tier AS tier, COUNT(*) n {latest} GROUP BY s.tier ORDER BY s.tier").fetchall()]
     return {"by_source": by_source, "by_tier": by_tier}
 
 
