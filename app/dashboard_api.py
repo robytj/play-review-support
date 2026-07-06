@@ -15,7 +15,7 @@ from datetime import date, timedelta
 
 from fastapi import APIRouter, Depends, HTTPException, Header
 
-from app import db, embeddings, vectorstore, config, llm, tone
+from app import db, embeddings, vectorstore, config, llm, tone, discord_send
 
 router = APIRouter(prefix="/api/dashboard")
 
@@ -348,6 +348,88 @@ def translate_suggestion(suggestion_id: int, target: str = "en"):
         )
     return {"suggestion_id": suggestion_id, "target_lang": target,
             "source_lang": source_lang, "skipped": False, "cached": False, **translated}
+
+
+@router.post("/suggestions/{suggestion_id}/send", dependencies=[Depends(require_service_key)])
+def send_suggestion(suggestion_id: int):
+    """Phase 6 — the ONLY Discord-write path. Posts the approved reply to the live ticket
+    channel. Every guard below must pass or it refuses (4xx); nothing auto-sends and it's
+    idempotent (a completed send is recorded in suggestion_actions with a unique index, so
+    a retry is a no-op). Requires a two-click flow upstream: Approve, then Send.
+
+    Guards (PHASE_6_7_SPEC): shadow_mode ON · status='approved' · conversation origin='live'
+    · channel='discord' · SID-first gate (player_id set) · not already sent · token set."""
+    # Guard 1: shadow mode must be ON. shadow_mode OFF would be auto-reply territory,
+    # which is explicitly out of scope — refuse to send in that mode.
+    config.reload()
+    if not config.DISCORD_SHADOW_MODE:
+        raise HTTPException(409, "shadow_mode is OFF — sending is disabled in this mode")
+
+    conn = db.get_conn()
+    row = conn.execute(
+        """SELECT s.id, s.status, s.suggested_answer, s.edited_answer, s.sent_at,
+                  c.origin, c.channel, c.external_id, c.player_id, c.id AS conversation_id
+           FROM suggestions s JOIN conversations c ON c.id = s.conversation_id
+           WHERE s.id = ?""",
+        (suggestion_id,),
+    ).fetchone()
+    if not row:
+        raise HTTPException(404, "suggestion not found")
+    d = dict(row)
+
+    if d["status"] == "sent" or d["sent_at"]:
+        return {"ok": True, "already_sent": True, "discord_message_id": None}
+    if d["status"] != "approved":
+        raise HTTPException(409, "only an approved suggestion can be sent (approve it first)")
+    if d["origin"] != "live":
+        raise HTTPException(403, "refusing to send a backfill row — sending is live-only")
+    if d["channel"] != "discord":
+        raise HTTPException(400, "sending is only implemented for Discord tickets")
+    if not (d["player_id"] or "").strip():
+        raise HTTPException(428, "SID-first gate: resolve the player's SID before sending")
+    if not d["external_id"]:
+        raise HTTPException(409, "conversation has no Discord channel id")
+
+    content = d["edited_answer"] or d["suggested_answer"]
+
+    # Idempotency reservation: claim the send BEFORE posting. The partial unique index
+    # (uq_send_once) makes a concurrent/duplicate click fail here instead of double-posting.
+    try:
+        with db.tx() as c:
+            c.execute(
+                "INSERT INTO suggestion_actions (suggestion_id, action_type, payload_json, status) "
+                "VALUES (?, 'send', ?, 'done')",
+                (suggestion_id, json.dumps({"channel_id": d["external_id"]})),
+            )
+    except Exception:
+        return {"ok": True, "already_sent": True, "discord_message_id": None}
+
+    try:
+        message_id = discord_send.post_message(d["external_id"], content)
+    except discord_send.NotConfigured:
+        # roll back the reservation so a real send can happen once the token is set
+        with db.tx() as c:
+            c.execute("DELETE FROM suggestion_actions WHERE suggestion_id=? AND action_type='send'",
+                      (suggestion_id,))
+        raise HTTPException(503, "DISCORD_BOT_TOKEN unset — go-live not enabled yet")
+    except discord_send.SendFailed as e:
+        with db.tx() as c:
+            c.execute("DELETE FROM suggestion_actions WHERE suggestion_id=? AND action_type='send'",
+                      (suggestion_id,))
+        raise HTTPException(502, f"Discord rejected the send: {e.detail}")
+
+    with db.tx() as c:
+        c.execute(
+            "UPDATE suggestions SET status='sent', sent_at=datetime('now'), discord_message_id=? WHERE id=?",
+            (message_id, suggestion_id))
+        c.execute(
+            "INSERT INTO messages (conversation_id, role, tier_used, text) VALUES (?, 'bot', NULL, ?)",
+            (d["conversation_id"], content))
+        c.execute(
+            "UPDATE suggestion_actions SET payload_json=?, executed_at=datetime('now') "
+            "WHERE suggestion_id=? AND action_type='send'",
+            (json.dumps({"channel_id": d["external_id"], "discord_message_id": message_id}), suggestion_id))
+    return {"ok": True, "sent": True, "discord_message_id": message_id}
 
 
 @router.get("/suggestions/summary", dependencies=[Depends(require_service_key)])

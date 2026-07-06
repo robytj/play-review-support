@@ -18,6 +18,7 @@ Any staff message in a tracked channel/thread pauses the bot there; `!resume` un
 Bot reacts to its own answers with 👍/👎; those reactions are logged as feedback.
 Tier-3 escalations ping the staff role in a private staff channel.
 """
+import json
 import re
 import sys
 from pathlib import Path
@@ -166,15 +167,47 @@ async def on_message(message: discord.Message):
         return
 
     if app_config.DISCORD_SHADOW_MODE:
-        # Ingest the ticket and run it through the full router so it shows up
-        # in the dashboard feed/queue exactly like a live answer would, but
-        # don't post any answer/thread/escalation in Discord -- just react
-        # with 👀 on the ticket message so it's visible the bot is alive and
-        # actively watching, without it speaking yet. For validating the
-        # pipeline against real tickets before trusting it to talk to players.
+        # Phase 6 live-shadow path. Ingest the ticket and run the router so it shows up
+        # in the dashboard feed exactly like a live answer would, but post NOTHING in
+        # Discord -- instead persist a PENDING suggestion an admin can approve-and-send
+        # from the dashboard (the only Discord-write path). React 👀 so it's visible the
+        # bot is watching without it speaking yet.
         conv_id = router.get_or_create_conversation("discord", external_id, player_id=ticket_player_id)
+
+        # SID-first (§4B): resolve the player's SID at ingest so the send gate has one.
+        # Best-effort: validate a card-supplied id, else an email in the text. Never fatal.
+        try:
+            from app import sid_lookup
+            m = re.search(r"[\w.+-]+@[\w-]+\.[\w.-]+", question_text or "")
+            sid = sid_lookup.resolve_sid(email=(m.group(0) if m else None), claimed_sid=ticket_player_id)
+            if sid:
+                conn.execute(
+                    "UPDATE conversations SET player_id=? WHERE id=? AND (player_id IS NULL OR player_id='')",
+                    (sid, conv_id))
+                conn.commit()
+        except Exception as e:
+            print(f"[warn] ingest SID lookup failed ({e!r})")
+
         router._log_message(conv_id, "user", None, question_text)
         result = router.answer(question_text, conv_id)
+
+        # Persist ONE pending suggestion per ticket (skip if this conversation already has
+        # an open one, so player follow-ups don't spawn duplicates in the review grid).
+        try:
+            existing = conn.execute(
+                "SELECT 1 FROM suggestions WHERE conversation_id=? AND status IN ('pending','approved')",
+                (conv_id,)).fetchone()
+            if not existing:
+                conn.execute(
+                    "INSERT INTO suggestions (conversation_id, source, question, suggested_answer, "
+                    "tier, retrieved_chunks, staff_answer, status) "
+                    "VALUES (?, 'discord', ?, ?, ?, ?, NULL, 'pending')",
+                    (conv_id, question_text, result["text"], result["tier"],
+                     json.dumps(result.get("chunks") or [], ensure_ascii=False)))
+                conn.commit()
+        except Exception as e:
+            print(f"[warn] couldn't persist live suggestion ({e!r})")
+
         print(
             f"[shadow] conv={conv_id} player_id={ticket_player_id!r} tier={result['tier']} "
             f"escalate={result['escalate']} would_reply={result['text'][:150]!r}"

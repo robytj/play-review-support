@@ -238,6 +238,14 @@ def _migrate(conn):
             chars INTEGER DEFAULT 0,
             built_at TEXT
         );
+
+        -- Phase 6 send idempotency (PHASE_6_7_SPEC): a completed send is logged as a
+        -- suggestion_actions row (action_type='send', status='done'). This partial unique
+        -- index makes a double-click / retry a no-op INSERT-fail instead of a double-post
+        -- to Discord -- the send endpoint treats the conflict as "already sent".
+        CREATE UNIQUE INDEX IF NOT EXISTS uq_send_once
+            ON suggestion_actions(suggestion_id)
+            WHERE action_type = 'send' AND status = 'done';
         """
     )
     conn.commit()
