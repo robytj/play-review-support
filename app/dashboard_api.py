@@ -47,20 +47,54 @@ def _enrich(row: dict) -> dict:
 
 
 @router.get("/feed", dependencies=[Depends(require_service_key)])
-def feed(limit: int = 50):
+def feed(limit: int = 50, channel: str | None = None, status: str | None = None):
+    """Unified ticket feed across all sources. Pass `channel` (email | freshdesk |
+    discord | web) to render a single source section, or omit it for everything.
+    `status` optionally narrows to e.g. resolved/open/escalated."""
     conn = db.get_conn()
+    where, params = [], []
+    if channel:
+        where.append("c.channel = ?")
+        params.append(channel)
+    if status:
+        where.append("c.status = ?")
+        params.append(status)
+    where_sql = ("WHERE " + " AND ".join(where)) if where else ""
+    params.append(limit)
     rows = conn.execute(
-        """
+        f"""
         SELECT c.id, c.channel, c.external_id, c.status, c.context, c.player_id, c.updated_at,
                (SELECT text FROM messages WHERE conversation_id = c.id ORDER BY id DESC LIMIT 1) AS last_text,
                (SELECT tier_used FROM messages WHERE conversation_id = c.id AND role='bot' ORDER BY id DESC LIMIT 1) AS last_tier
         FROM conversations c
+        {where_sql}
         ORDER BY c.updated_at DESC
         LIMIT ?
         """,
-        (limit,),
+        params,
     ).fetchall()
     return [_enrich(dict(r)) for r in rows]
+
+
+@router.get("/channels", dependencies=[Depends(require_service_key)])
+def channels():
+    """Per-source ticket counts -- powers the unified feed's section headers
+    (Email / Freshdesk / Discord / Web), each with total + open/resolved split."""
+    conn = db.get_conn()
+    rows = conn.execute(
+        """
+        SELECT channel,
+               COUNT(*) AS total,
+               SUM(CASE WHEN status='resolved' THEN 1 ELSE 0 END) AS resolved,
+               SUM(CASE WHEN status!='resolved' THEN 1 ELSE 0 END) AS open,
+               MAX(updated_at) AS latest
+        FROM conversations
+        GROUP BY channel
+        ORDER BY total DESC
+        """
+    ).fetchall()
+    sections = [dict(r) for r in rows]
+    return {"sections": sections, "total": sum(s["total"] for s in sections)}
 
 
 @router.get("/conversations/{conversation_id}", dependencies=[Depends(require_service_key)])
@@ -103,6 +137,111 @@ def queue():
         """
     ).fetchall()
     return [_enrich(dict(r)) for r in rows]
+
+
+# -------------------------------------------------------------------- suggestions --
+# Ticket Review grid backend (SHADOW_BACKFILL_SPEC Phase 4). Serves backfill +
+# (later) live-shadow suggestions across sources. Constraint 6: suggested_answer
+# is immutable -- PATCH here only ever writes edited_answer; regeneration happens
+# in the replay script as a new row with supersedes_id, never via this API.
+
+def _admin_url(player_id: str | None) -> str | None:
+    """Consistent player SID -> game-admin deep link, same convention used
+    everywhere a SID is known regardless of source (Discord/Freshdesk/email)."""
+    return f"https://admin.brx.indusgame.com/player/{player_id}" if player_id else None
+
+
+@router.get("/suggestions", dependencies=[Depends(require_service_key)])
+def list_suggestions(source: str | None = None, origin: str | None = None,
+                     tier: int | None = None, status: str | None = None, limit: int = 200):
+    """Joined conversations + suggestions rows for the Ticket Review grid.
+    Filters: source (discord|freshdesk|email), origin (backfill|live), tier, status."""
+    conn = db.get_conn()
+    where, params = [], []
+    if source:
+        where.append("s.source = ?"); params.append(source)
+    if origin:
+        where.append("c.origin = ?"); params.append(origin)
+    if tier is not None:
+        where.append("s.tier = ?"); params.append(tier)
+    if status:
+        where.append("s.status = ?"); params.append(status)
+    where_sql = ("WHERE " + " AND ".join(where)) if where else ""
+    params.append(limit)
+    rows = conn.execute(
+        f"""
+        SELECT s.id, s.conversation_id, s.source, s.question, s.suggested_answer,
+               s.edited_answer, s.tier, s.staff_answer, s.status, s.approved_at,
+               s.sent_at, s.created_at, s.supersedes_id,
+               c.channel, c.external_id, c.origin, c.player_id, c.context
+        FROM suggestions s JOIN conversations c ON c.id = s.conversation_id
+        {where_sql}
+        ORDER BY s.created_at DESC
+        LIMIT ?
+        """,
+        params,
+    ).fetchall()
+    out = []
+    for r in rows:
+        d = dict(r)
+        d["admin_url"] = _admin_url(d.get("player_id"))
+        d["discord_url"] = _discord_url(d.get("channel"), d.get("external_id"))
+        d["final_answer"] = d.get("edited_answer") or d.get("suggested_answer")
+        d["actions"] = []  # future action buttons (§4) -- empty for now
+        out.append(d)
+    return out
+
+
+@router.patch("/suggestions/{suggestion_id}", dependencies=[Depends(require_service_key)])
+def edit_suggestion(suggestion_id: int, payload: dict):
+    """ONLY edits edited_answer. suggested_answer is immutable training data
+    (constraint 6) -- any attempt to set it is rejected."""
+    if "suggested_answer" in payload:
+        raise HTTPException(400, "suggested_answer is immutable; edits go in edited_answer")
+    if "edited_answer" not in payload:
+        raise HTTPException(400, "only edited_answer is editable")
+    conn = db.get_conn()
+    row = conn.execute("SELECT id FROM suggestions WHERE id = ?", (suggestion_id,)).fetchone()
+    if not row:
+        raise HTTPException(404, "suggestion not found")
+    with db.tx() as c:
+        c.execute("UPDATE suggestions SET edited_answer = ? WHERE id = ?",
+                  (payload["edited_answer"], suggestion_id))
+    return {"ok": True}
+
+
+@router.post("/suggestions/{suggestion_id}/approve", dependencies=[Depends(require_service_key)])
+def approve_suggestion(suggestion_id: int):
+    """Marks 'this is the answer I'd have wanted'. Does NOT send (constraint 5) --
+    for backfill rows it just feeds Phase 5 KB enrichment + Phase 7 tone training;
+    sending is a separate, Phase-6, live-only, per-message action."""
+    with db.tx() as conn:
+        cur = conn.execute(
+            "UPDATE suggestions SET status='approved', approved_at=datetime('now') WHERE id = ?",
+            (suggestion_id,))
+        if cur.rowcount == 0:
+            raise HTTPException(404, "suggestion not found")
+    return {"ok": True}
+
+
+@router.post("/suggestions/{suggestion_id}/reject", dependencies=[Depends(require_service_key)])
+def reject_suggestion(suggestion_id: int):
+    with db.tx() as conn:
+        cur = conn.execute("UPDATE suggestions SET status='rejected' WHERE id = ?", (suggestion_id,))
+        if cur.rowcount == 0:
+            raise HTTPException(404, "suggestion not found")
+    return {"ok": True}
+
+
+@router.get("/suggestions/summary", dependencies=[Depends(require_service_key)])
+def suggestions_summary():
+    """Counts by source x status x tier for the review grid's section headers/filters."""
+    conn = db.get_conn()
+    by_source = [dict(r) for r in conn.execute(
+        "SELECT source, status, COUNT(*) n FROM suggestions GROUP BY source, status").fetchall()]
+    by_tier = [dict(r) for r in conn.execute(
+        "SELECT tier, COUNT(*) n FROM suggestions GROUP BY tier ORDER BY tier").fetchall()]
+    return {"by_source": by_source, "by_tier": by_tier}
 
 
 # ---------------------------------------------------------------------------- kb --

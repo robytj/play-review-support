@@ -12,3 +12,8 @@ data/
 # per-run output, not source, and channels_audit.json / raw dumps may include
 # player-identifying info (SIDs, questions) that shouldn't land in git history.
 backfill_out/
+
+support_emails/
+support_emails_excluded/
+support_emails*.csv
+classification.csv

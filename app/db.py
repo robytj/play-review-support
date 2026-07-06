@@ -148,11 +148,65 @@ def _migrate(conn):
     if "player_id" not in cols:
         conn.execute("ALTER TABLE conversations ADD COLUMN player_id TEXT")
         conn.commit()
+    # source/origin dimension for the unified ticket store (Discord backfill,
+    # Freshdesk + email import). 'live' rows come from the running bot/web widget;
+    # 'backfill' rows are imported history the live bot must never act on.
+    if "origin" not in cols:
+        conn.execute("ALTER TABLE conversations ADD COLUMN origin TEXT DEFAULT 'live'")
+        conn.commit()
+
+    msg_cols = {row["name"] for row in conn.execute("PRAGMA table_info(messages)").fetchall()}
+    if "author_name" not in msg_cols:
+        # display name for backfilled staff/player messages (live rows leave it '')
+        conn.execute("ALTER TABLE messages ADD COLUMN author_name TEXT DEFAULT ''")
+        conn.commit()
 
     kb_cols = {row["name"] for row in conn.execute("PRAGMA table_info(kb_articles)").fetchall()}
     if "category" not in kb_cols:
         conn.execute("ALTER TABLE kb_articles ADD COLUMN category TEXT DEFAULT ''")
         conn.commit()
+
+    # Persistent, never-regenerated store of bot-generated responses (backfill
+    # replay + Freshdesk/email replay + Phase-6 live shadow). See SHADOW_BACKFILL_SPEC
+    # §4. suggested_answer is IMMUTABLE once written (constraint 6): edits go in
+    # edited_answer; a regeneration is a NEW row with supersedes_id set, never an
+    # UPDATE. Deliberately kept out of messages/metrics_daily/answer_cache so
+    # replay/pending drafts never pollute the live pipeline.
+    conn.executescript(
+        """
+        CREATE TABLE IF NOT EXISTS suggestions (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            conversation_id INTEGER NOT NULL REFERENCES conversations(id),
+            source TEXT NOT NULL DEFAULT 'discord',   -- discord | freshdesk | email
+            question TEXT NOT NULL,
+            suggested_answer TEXT NOT NULL,           -- IMMUTABLE once written
+            edited_answer TEXT,                       -- display/send uses COALESCE(edited, suggested)
+            tier INTEGER,
+            retrieved_chunks TEXT DEFAULT '',         -- json
+            staff_answer TEXT,                        -- actual historical human reply (NULL for live until sent)
+            status TEXT NOT NULL DEFAULT 'pending',   -- pending | approved | sent | rejected
+            approved_at TEXT,
+            sent_at TEXT,
+            discord_message_id TEXT,                  -- set after a Phase-6 send
+            supersedes_id INTEGER REFERENCES suggestions(id),
+            created_at TEXT DEFAULT (datetime('now'))
+        );
+        CREATE INDEX IF NOT EXISTS idx_suggestions_convo ON suggestions(conversation_id);
+        CREATE INDEX IF NOT EXISTS idx_suggestions_source_status ON suggestions(source, status);
+
+        -- Future-proofing for action buttons (design only; nothing builds actions
+        -- yet). Lets "Restore purchase" etc. slot in later -- manual trigger first.
+        CREATE TABLE IF NOT EXISTS suggestion_actions (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            suggestion_id INTEGER NOT NULL REFERENCES suggestions(id),
+            action_type TEXT NOT NULL,
+            payload_json TEXT DEFAULT '',
+            status TEXT NOT NULL DEFAULT 'pending',
+            executed_at TEXT
+        );
+        """
+    )
+    conn.commit()
 
 
 @contextmanager

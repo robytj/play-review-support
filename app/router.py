@@ -61,7 +61,10 @@ def _tier0_canned(q_vec):
     return row["answer"] if row else None
 
 
-def _tier1_answer_cache(q_vec):
+def _answer_cache_lookup(q_vec):
+    """PURE read: nearest approved answer_cache entry above threshold, or None.
+    Returns (row_id, answer) so the live wrapper can bump send_count while
+    suggest() can reuse the exact same match logic without any write."""
     hits = vectorstore.search("answer_cache", q_vec, top_k=1, where="approved = 1")
     if not hits:
         return None
@@ -70,14 +73,25 @@ def _tier1_answer_cache(q_vec):
         return None
     conn = db.get_conn()
     row = conn.execute("SELECT answer FROM answer_cache WHERE id = ?", (row_id,)).fetchone()
-    if row:
-        conn.execute("UPDATE answer_cache SET send_count = send_count + 1 WHERE id = ?", (row_id,))
-        conn.commit()
-        return row["answer"]
-    return None
+    return (row_id, row["answer"]) if row else None
 
 
-def _tier2_haiku_rag(question, q_vec):
+def _tier1_answer_cache(q_vec):
+    res = _answer_cache_lookup(q_vec)
+    if not res:
+        return None
+    row_id, ans = res
+    conn = db.get_conn()
+    conn.execute("UPDATE answer_cache SET send_count = send_count + 1 WHERE id = ?", (row_id,))
+    conn.commit()
+    return ans
+
+
+def _rag_generate(question, q_vec):
+    """PURE (aside from the Claude call it's meant to make): retrieve published KB
+    chunks above threshold and produce a RAG answer. Does NOT seed answer_cache or
+    touch any table -- so suggest() can call it during backfill/shadow replay
+    without polluting the live pipeline. Returns (text, chunks) or (None, None)."""
     hits = vectorstore.search("kb_articles", q_vec, top_k=config.RAG_TOP_K, where="status = 'published'")
     if not hits or hits[0][1] < config.TAU_RETRIEVAL_CONFIDENCE:
         return None, None
@@ -90,6 +104,13 @@ def _tier2_haiku_rag(question, q_vec):
     if not chunks:
         return None, None
     text, usage = llm.answer_with_rag(question, chunks)
+    return text, chunks
+
+
+def _tier2_haiku_rag(question, q_vec):
+    text, chunks = _rag_generate(question, q_vec)
+    if text is None:
+        return None, None
     # seed the answer cache as unapproved -- promoted to canned only after positive feedback (learn.py)
     with db.tx() as c:
         c.execute(
@@ -132,6 +153,40 @@ def answer(question: str, conversation_id: int) -> dict:
     mid = _log_message(conversation_id, "bot", 3, HOLDING_REPLY)
     _mark_escalated(conversation_id)
     return {"tier": 3, "text": HOLDING_REPLY, "message_id": mid, "escalate": True}
+
+
+def suggest(question: str) -> dict:
+    """PURE tier cascade for backfill / shadow replay (SHADOW_BACKFILL_SPEC Phase 3).
+
+    Returns {"tier": 0|1|2|3, "text": str, "chunks": list} and MUST stay free of
+    side effects: it must NOT write `messages`, bump `metrics_daily`, seed
+    `answer_cache`, or flip conversation status. Replay runs this once per ticket
+    to persist a suggestion; letting it touch the live pipeline would corrupt
+    metrics and re-arm the exact runaway behavior from the 2026-07-04 incident.
+
+    It mirrors answer()'s ordering exactly by reusing the same pure lookups
+    (_canned_lookup via _tier0_canned, _answer_cache_lookup, _rag_generate) so the
+    two cannot drift. The only intended external call is the tier-2 Claude
+    generation inside _rag_generate -- that IS the suggestion being produced.
+    """
+    q_vec = embeddings.embed(question)
+
+    if _is_sensitive(question):
+        return {"tier": 3, "text": HOLDING_REPLY, "chunks": []}
+
+    canned = _tier0_canned(q_vec)  # already pure (read-only)
+    if canned is not None:
+        return {"tier": 0, "text": canned, "chunks": []}
+
+    cached = _answer_cache_lookup(q_vec)
+    if cached is not None:
+        return {"tier": 1, "text": cached[1], "chunks": []}
+
+    text, chunks = _rag_generate(question, q_vec)
+    if text is not None:
+        return {"tier": 2, "text": text, "chunks": chunks}
+
+    return {"tier": 3, "text": HOLDING_REPLY, "chunks": []}
 
 
 def get_or_create_conversation(channel: str, external_id: str, context: str = "", player_id: str = None) -> int:
