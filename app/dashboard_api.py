@@ -151,6 +151,49 @@ def _admin_url(player_id: str | None) -> str | None:
     return f"https://admin.brx.indusgame.com/player/{player_id}" if player_id else None
 
 
+def _ticket_meta(source: str, context: str | None, external_id: str | None,
+                 created_at: str | None) -> dict:
+    """Derives the Ticket Review grid's To / From / Date columns (PROJECT_HANDOFF
+    §4A #1, #2, #4) from a conversation, source-aware and with graceful fallbacks.
+
+    The heavy lifting (recipient address, Discord submitter username, the real
+    reported date) is done once, offline, by scripts/enrich_ticket_metadata.py,
+    which persists the values into context -- so this stays a cheap per-row read
+    with no CSV/raw-file access at request time. `date_is_estimated` tells the UI
+    when to show the date under a softer "reported" label vs. an exact one."""
+    try:
+        ctx = json.loads(context) if context else {}
+    except (ValueError, TypeError):
+        ctx = {}
+
+    # To -- who the ticket was addressed to.
+    to_display = ctx.get("to")
+    if not to_display and source == "discord":
+        cname = ctx.get("channel_name") or "ticket"
+        to_display = f"{cname} / {external_id}" if external_id else cname
+
+    # From -- the player identity. Discord's real player is the first non-bot
+    # author (stored as context.submitter by the enrichment pass); email/freshdesk
+    # use the sender address.
+    from_display = ctx.get("submitter") if source == "discord" else ctx.get("from")
+
+    # Date -- the ORIGINAL message date, not the import/replay date. Prefer the
+    # enrichment-persisted reported_date; fall back to the conversation's own
+    # created_at (real for email, an import stamp for freshdesk -- hence estimated).
+    reported_date = ctx.get("reported_date")
+    date_is_estimated = False
+    if not reported_date:
+        reported_date = (created_at or "")[:10] or None
+        date_is_estimated = source != "email"
+
+    return {
+        "to_display": to_display or None,
+        "from_display": from_display or None,
+        "reported_date": reported_date,
+        "date_is_estimated": date_is_estimated,
+    }
+
+
 @router.get("/suggestions", dependencies=[Depends(require_service_key)])
 def list_suggestions(source: str | None = None, origin: str | None = None,
                      tier: int | None = None, status: str | None = None, limit: int = 200):
@@ -177,7 +220,8 @@ def list_suggestions(source: str | None = None, origin: str | None = None,
         SELECT s.id, s.conversation_id, s.source, s.question, s.suggested_answer,
                s.edited_answer, s.tier, s.staff_answer, s.status, s.approved_at,
                s.sent_at, s.created_at, s.supersedes_id,
-               c.channel, c.external_id, c.origin, c.player_id, c.context
+               c.channel, c.external_id, c.origin, c.player_id, c.context,
+               c.created_at AS convo_created_at
         FROM suggestions s JOIN conversations c ON c.id = s.conversation_id
         {where_sql}
         ORDER BY s.created_at DESC
@@ -191,6 +235,9 @@ def list_suggestions(source: str | None = None, origin: str | None = None,
         d["admin_url"] = _admin_url(d.get("player_id"))
         d["discord_url"] = _discord_url(d.get("channel"), d.get("external_id"))
         d["final_answer"] = d.get("edited_answer") or d.get("suggested_answer")
+        # To / From / Date columns (§4A #1, #2, #4)
+        d.update(_ticket_meta(d.get("source"), d.get("context"),
+                              d.get("external_id"), d.get("convo_created_at")))
         d["actions"] = []  # future action buttons (§4) -- empty for now
         out.append(d)
     return out
@@ -235,6 +282,72 @@ def reject_suggestion(suggestion_id: int):
         if cur.rowcount == 0:
             raise HTTPException(404, "suggestion not found")
     return {"ok": True}
+
+
+@router.get("/suggestions/{suggestion_id}/translate", dependencies=[Depends(require_service_key)])
+def translate_suggestion(suggestion_id: int, target: str = "en"):
+    """Translate a ticket's reviewer-facing text (player question + historical staff
+    reply + bot's final answer) into `target` (default English) for the Ticket Review
+    detail pane (§4C). Returns a cached translation if one exists; otherwise detects
+    the source language, SKIPS (no API cost) if it's already the target language,
+    else translates once with Haiku and caches in ticket_translations.
+
+    Response: {suggestion_id, target_lang, source_lang, skipped, cached,
+               question, staff_answer, final_answer}. When skipped/same-language the
+    original text is echoed back so the client can render uniformly."""
+    conn = db.get_conn()
+    row = conn.execute(
+        """SELECT s.id, s.question, s.staff_answer, s.edited_answer, s.suggested_answer
+           FROM suggestions s WHERE s.id = ?""", (suggestion_id,)
+    ).fetchone()
+    if not row:
+        raise HTTPException(404, "suggestion not found")
+    d = dict(row)
+    final_answer = d.get("edited_answer") or d.get("suggested_answer") or ""
+    originals = {
+        "question": d.get("question") or "",
+        "staff_answer": d.get("staff_answer") or "",
+        "final_answer": final_answer,
+    }
+
+    cached = conn.execute(
+        "SELECT source_lang, question, staff_answer, final_answer FROM ticket_translations "
+        "WHERE suggestion_id = ? AND target_lang = ?", (suggestion_id, target),
+    ).fetchone()
+    if cached:
+        c = dict(cached)
+        return {"suggestion_id": suggestion_id, "target_lang": target,
+                "source_lang": c["source_lang"], "skipped": False, "cached": True,
+                "question": c["question"], "staff_answer": c["staff_answer"],
+                "final_answer": c["final_answer"]}
+
+    # Detect on the player's question (the field most likely to be non-English).
+    source_lang = llm.detect_language(originals["question"])
+    if source_lang == target:
+        # Already in the target language -- cache the originals so the button is a
+        # one-time no-op and we never pay to "translate" English->English.
+        with db.tx() as cx:
+            cx.execute(
+                "INSERT OR REPLACE INTO ticket_translations "
+                "(suggestion_id, target_lang, source_lang, question, staff_answer, final_answer) "
+                "VALUES (?, ?, ?, ?, ?, ?)",
+                (suggestion_id, target, source_lang, originals["question"],
+                 originals["staff_answer"], originals["final_answer"]),
+            )
+        return {"suggestion_id": suggestion_id, "target_lang": target,
+                "source_lang": source_lang, "skipped": True, "cached": False, **originals}
+
+    translated = llm.translate_text_fields(originals, target_lang=target)
+    with db.tx() as cx:
+        cx.execute(
+            "INSERT OR REPLACE INTO ticket_translations "
+            "(suggestion_id, target_lang, source_lang, question, staff_answer, final_answer) "
+            "VALUES (?, ?, ?, ?, ?, ?)",
+            (suggestion_id, target, source_lang, translated["question"],
+             translated["staff_answer"], translated["final_answer"]),
+        )
+    return {"suggestion_id": suggestion_id, "target_lang": target,
+            "source_lang": source_lang, "skipped": False, "cached": False, **translated}
 
 
 @router.get("/suggestions/summary", dependencies=[Depends(require_service_key)])

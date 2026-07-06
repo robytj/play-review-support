@@ -85,37 +85,48 @@ local `data/supportbot.db`, which is how progress was inspected here).
 ## 4. PENDING — next series of steps (from John's 2026-07-06 request)
 
 ### 4A. Add 4 columns to the Ticket Review grid (all sources)
-1. **To** — recipient of the ticket. Freshdesk: the support email address it was sent to;
-   Email: the `to` address; Discord: the channel name + ticket ID (e.g. `bugs / ticket-19`).
-   Data: email/freshdesk `to` is in `messages`/`conversations.context`; Discord channel
-   name + id are in `context.channel_name` + `external_id` (fetch stores these).
-2. **From** — the player identity. Email/Freshdesk: sender email (already prefixed into the
-   stored message text `[email] ...`; better: parse to a dedicated field). Discord: the
-   ticket submitter's **discord username** — NOTE current fetch stores `author_name` on
-   messages but the card author is Ticket King; the real player is the first non-bot
-   author. May need a fetch tweak to capture/display the submitter username per ticket.
-3. **SID** — use the extracted SID if present; otherwise resolve via the player's **email →
-   MongoDB lookup**. Must be efficient: batch/dedupe emails, one bulk Mongo query (or a
-   cached map), run as part of a one-time ticket-verification pass, not per-render or
-   per-row. Persist resolved SID onto `conversations.player_id` so it's not re-queried.
-   OPEN: confirm Mongo access/credentials + the players collection + the email/username →
-   SID field mapping (see §5). Do NOT invent a SID format.
-4. **Date** — show the **original message date** (first message's date) instead of the
-   import/replay date. Store/derive from `conversations.created_at` or the first message's
-   `created_at`; fall back to a "reported date" label if unknown.
+Backend + data **DONE 2026-07-06** for To/From/Date; SID scaffolded (blocked on Mongo
+mapping). Frontend lives in play-review-responder — paste-ready snippets in
+`TICKET_REVIEW_FRONTEND_PATCH.md`. Enrichment: `scripts/enrich_ticket_metadata.py`
+(idempotent, offline) persisted To/From/original-date into `conversations.context` for
+all 2,855 tickets. API `/api/dashboard/suggestions` now returns `to_display`,
+`from_display`, `reported_date`, `date_is_estimated` per row (`_ticket_meta()`).
+
+1. **To** — DONE. email→recipient support address (from `support_emails.csv`, matched by
+   gmail thread id); freshdesk→support inbox (`FRESHDESK_DOMAIN`); discord→
+   `ticket-19 / <external_id>` (from `context.channel_name` + `external_id`).
+2. **From** — DONE. email/freshdesk→sender email (`context.from`); discord→player's
+   display name = first non-bot author, recovered from `backfill_out/raw/<id>.json` and
+   persisted as `context.submitter` (Ticket King bot messages skipped).
+3. **SID** — **BLOCKED (scaffolded)**. `scripts/resolve_sids.py` does the efficient
+   dedupe→one bulk Mongo `$in` query→persist onto `conversations.player_id` (one-time,
+   re-runnable). Needs env vars wired: `MONGO_URI/MONGO_DB/MONGO_PLAYERS_COLLECTION/
+   MONGO_EMAIL_FIELD/MONGO_SID_FIELD`. Creds live in **play-review-responder's settings
+   variables** (John, 2026-07-06); still OPEN: which DB/collection holds players + exact
+   email/username→SID field names (§5). Do NOT invent a SID format. Once it runs,
+   `admin_url` populates in the grid automatically.
+4. **Date** — DONE. `reported_date` = original message date (real for email & discord;
+   the freshdesk export carries no date, so `date_is_estimated=true` and the grid renders
+   it softer). Discord dates corrected from import-stamp (2026-07-05) to real (e.g. 2026-06-26).
 
 ### 4B. SID-first support flow (design principle)
 Every support interface (bot, web, review→future send) must **ask for / determine the
 player's SID before any support action**. Bake this into the router/agent flow and the
 future Phase-6 send path. For backfill review it's informational; for live it's a gate.
+NOT YET BUILT — depends on the 4A #3 Mongo mapping (resolver) being live first.
 
-### 4C. Translation (Haiku, cost-controlled)
-- Much content is Portuguese/Spanish/etc. Add a **translate option** in the Ticket Review
-  detail (and later the agent) using a **Haiku** API key to keep costs low.
-- For existing DB tickets: translate **once** and cache (e.g. a `translations` table keyed
-  by (conversation_id/message_id, lang) — mirror the existing `kb_translations` pattern in
-  `app/db.py`), not per-view. Batch the one-time pass; detect source language and skip
-  English. Reuse `app/llm.py` translate helpers where possible.
+### 4C. Translation (Haiku, cost-controlled) — DONE 2026-07-06
+- `ticket_translations` table (mirrors `kb_translations`), keyed by
+  `(suggestion_id, target_lang)`, added in `app/db.py _migrate()`.
+- `app/llm.py`: `detect_language()` (offline stopword/codepoint heuristic, skips English
+  for free) + `translate_text_fields()` (one Haiku call for all fields, `[[n]]`-delimited).
+  Uses the existing `ANTHROPIC_API_KEY` + `RAG_MODEL` (already `claude-haiku-4-5-20251001`)
+  — that resolves the old "which Haiku key" open question; no separate key needed.
+- API `GET /api/dashboard/suggestions/{id}/translate?target=en`: cache-first; detects
+  source lang; skips/echoes if already English; else translates once and caches.
+- One-time batch `scripts/translate_tickets.py` (idempotent, resumable, `--limit` to meter
+  spend). Run on John's machine / Railway (sandbox has no Anthropic network). Translates the
+  latest suggestion per ticket (question + staff reply + final answer).
 
 ### 4D. Remaining spec phases (SHADOW_BACKFILL_SPEC)
 - **Phase 6** go-live approve-to-send (the only Discord-write path; admin-gated; token
@@ -124,17 +135,24 @@ future Phase-6 send path. For backfill review it's informational; for live it's 
   staff answers as style examples into `app/llm.py answer_with_rag()`.
 
 ## 5. Open questions for the next session
-- **MongoDB for SID resolution**: what connection/credentials exist, which DB/collection
-  holds players, and what field maps email/username → SID? (John raised MongoDB lookup;
-  the admin panel `admin.brx.indusgame.com/player/<SID>` is the only confirmed surface.)
-  Needed before 4A #3 and 4B can be built.
-- Discord submitter username capture: confirm whether fetch already retained it (author_name
-  on the first non-bot message) or needs a re-fetch.
-- Haiku key: which key/env var to use for translation.
+- **MongoDB for SID resolution (4A #3 / 4B)**: creds are in play-review-responder's
+  settings variables (John, 2026-07-06). STILL NEEDED before running
+  `scripts/resolve_sids.py`: which DB name + collection holds players, and the exact field
+  names for email→SID (and optionally discord username→SID). Wire them into
+  `MONGO_URI/MONGO_DB/MONGO_PLAYERS_COLLECTION/MONGO_EMAIL_FIELD/MONGO_SID_FIELD` and
+  `pip install pymongo`. Admin panel `admin.brx.indusgame.com/player/<SID>` remains the
+  only confirmed SID surface. Do NOT invent a SID format.
+- ~~Discord submitter username capture~~ — RESOLVED: recovered from `backfill_out/raw/`
+  (author.global_name/username on the first non-bot message); no re-fetch needed.
+- ~~Haiku key~~ — RESOLVED: existing `ANTHROPIC_API_KEY` + `RAG_MODEL`
+  (`claude-haiku-4-5-20251001`). No separate key.
 
 ## 6. Where the code lives (changed/added this project)
-PrimeRush-Bot: `app/db.py`, `app/router.py`, `app/dashboard_api.py`,
+PrimeRush-Bot: `app/db.py`, `app/router.py`, `app/dashboard_api.py`, `app/llm.py`,
 `scripts/{classify_support_emails,load_email_tickets,load_freshdesk_tickets,build_kb_from_tickets}.py`,
 `scripts/backfill_discord_tickets.py`, `BACKFILL_RUNBOOK.md`, `SHADOW_BACKFILL_SPEC.md`, this file.
+2026-07-06 additions: `scripts/enrich_ticket_metadata.py` (To/From/Date enrichment, run),
+`scripts/translate_tickets.py` (§4C batch, run on John's machine), `scripts/resolve_sids.py`
+(§4A#3 SID scaffold, needs Mongo mapping), `TICKET_REVIEW_FRONTEND_PATCH.md` (frontend snippets).
 play-review-responder: `play_reviewer.py` (nav link, `/ticket-review` page + `TICKETREVIEW_HTML`,
 `/api/support/suggestions*` proxy routes).

@@ -190,3 +190,100 @@ def translate_article(title: str, symptom: str, answer: str, lang: str, model: s
             if current:
                 fields[current] += " " + line.strip()
     return fields
+
+
+# ------------------------------------------------------ ticket translation (§4C) --
+
+# Cheap, offline, no-API-call language guess. Used only to SKIP translating tickets
+# that are already in the target language (the common case is English), so the
+# one-time batch pass in scripts/translate_tickets.py doesn't waste a Haiku call on
+# them. Deliberately conservative: when unsure it returns "" (unknown) and the
+# caller translates anyway rather than risk leaving foreign text untranslated.
+_STOPWORDS = {
+    "en": {" the ", " and ", " you ", " your ", " for ", " with ", " have ", " this ",
+           " that ", " not ", " can ", " please ", " help ", " account ", " game "},
+    "pt": {" não ", " você ", " está ", " para ", " com ", " meu ", " minha ", " jogo ",
+           " conta ", " por favor ", " obrigado ", " que ", " uma ", " também "},
+    "es": {" no ", " que ", " está ", " para ", " con ", " mi ", " por favor ",
+           " gracias ", " cuenta ", " juego ", " una ", " pero ", " hola "},
+}
+
+
+def detect_language(text: str) -> str:
+    """Returns 'en' | 'pt' | 'es' | '' (unknown). Heuristic stopword scoring -- good
+    enough to decide 'is this already English?' without an API round-trip. Arabic /
+    other non-Latin scripts are detected by codepoint range."""
+    t = (text or "").lower()
+    # Email tickets store a "[sender@domain] " prefix in the message/question text;
+    # strip a single leading bracketed token so it doesn't skew short-text detection.
+    if t.startswith("["):
+        end = t.find("]")
+        if 0 < end < 80:
+            t = t[end + 1:].strip()
+    if not t.strip():
+        return ""
+    if any("؀" <= ch <= "ۿ" for ch in t):  # Arabic block
+        return "ar"
+    padded = f" {t} "
+    scores = {lang: sum(padded.count(w) for w in words) for lang, words in _STOPWORDS.items()}
+    best = max(scores, key=scores.get)
+    return best if scores[best] > 0 else ""
+
+
+_LANG_NAMES = {"en": "English", "pt": "Portuguese", "es": "Spanish", "ar": "Arabic",
+               "fr": "French", "de": "German", "hi": "Hindi"}
+
+
+def translate_text_fields(fields: dict[str, str], target_lang: str = "en",
+                          model: str = None) -> dict[str, str]:
+    """Translate an arbitrary set of named text fields into target_lang in ONE Haiku
+    call (cost-controlled per §4C). `fields` is {name: text}; returns {name: translated}
+    for the same keys. Empty inputs are passed through untouched. Used by the Ticket
+    Review translate button and the scripts/translate_tickets.py batch pass; results
+    are cached by the caller in ticket_translations, never re-translated per view."""
+    lang_name = _LANG_NAMES.get(target_lang, target_lang)
+    model = model or RAG_MODEL
+    # Only send non-empty fields to the model; keep a stable ordering.
+    items = [(k, v) for k, v in fields.items() if (v or "").strip()]
+    if not items:
+        return {k: (v or "") for k, v in fields.items()}
+    client = _get_client()
+    numbered = "\n".join(f"[[{i+1}]]\n{v}" for i, (_, v) in enumerate(items))
+    resp = client.messages.create(
+        model=model,
+        max_tokens=1500,
+        messages=[{
+            "role": "user",
+            "content": (
+                f"Translate each numbered section below into {lang_name}. Keep a natural, "
+                "player-support tone (not word-for-word), and keep product/feature names, "
+                "error codes, SIDs, emails and URLs unchanged. Preserve the exact "
+                "[[n]] markers and output ONLY the translated sections, each under its "
+                f"marker, nothing else:\n\n{numbered}"
+            ),
+        }],
+    )
+    text = "".join(b.text for b in resp.content if b.type == "text")
+    # Parse back the [[n]] blocks.
+    parsed: dict[int, str] = {}
+    current = None
+    buf: list[str] = []
+    for line in text.splitlines():
+        stripped = line.strip()
+        if stripped.startswith("[[") and stripped.rstrip().endswith("]]"):
+            if current is not None:
+                parsed[current] = "\n".join(buf).strip()
+            try:
+                current = int(stripped.strip("[] "))
+            except ValueError:
+                current = None
+            buf = []
+        elif current is not None:
+            buf.append(line)
+    if current is not None:
+        parsed[current] = "\n".join(buf).strip()
+
+    out = {k: (v or "") for k, v in fields.items()}
+    for i, (k, original) in enumerate(items):
+        out[k] = parsed.get(i + 1, original)  # fall back to original if a block went missing
+    return out

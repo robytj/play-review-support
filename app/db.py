@@ -204,6 +204,25 @@ def _migrate(conn):
             status TEXT NOT NULL DEFAULT 'pending',
             executed_at TEXT
         );
+
+        -- Cached machine translations of a ticket (PROJECT_HANDOFF §4C), mirroring
+        -- the kb_translations pattern above. Keyed by (suggestion_id, target_lang):
+        -- much support content is Portuguese/Spanish/etc and the Ticket Review pane
+        -- offers a "translate" button, so each ticket is translated ONCE with Haiku
+        -- and served from here after that (never per-view). `source_lang` records the
+        -- detected original language so an English ticket is cached as a no-op skip.
+        -- Rows translate the reviewer-facing fields: the player's question, the
+        -- historical staff_answer, and the bot's final_answer.
+        CREATE TABLE IF NOT EXISTS ticket_translations (
+            suggestion_id INTEGER NOT NULL REFERENCES suggestions(id),
+            target_lang TEXT NOT NULL,          -- e.g. 'en'
+            source_lang TEXT DEFAULT '',        -- detected original; '' if unknown
+            question TEXT DEFAULT '',
+            staff_answer TEXT DEFAULT '',
+            final_answer TEXT DEFAULT '',
+            created_at TEXT DEFAULT (datetime('now')),
+            PRIMARY KEY (suggestion_id, target_lang)
+        );
         """
     )
     conn.commit()
