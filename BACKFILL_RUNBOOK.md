@@ -128,29 +128,56 @@ has its own volume DB (`/data/supportbot.db` on volume `web-volume`) — it stay
 until you upload. `/api/dashboard/suggestions/summary` returning `{"by_source":[],"by_tier":[]}`
 means "wired correctly, no data yet" — this is the fix.
 
+> ⚠️ **DB volume runs in WAL mode — a bare upload corrupts it.** Uploading `supportbot.db`
+> alone leaves the volume's old `-wal`/`-shm` sidecar files in place; on restart SQLite
+> replays that stale WAL onto the new image and you get
+> `sqlite3.DatabaseError: database disk image is malformed` (seen live 2026-07-06 —
+> `/api/dashboard/suggestions` 500'd while smaller reads still worked). ALWAYS upload a
+> `VACUUM INTO` copy (which is WAL-free) AND clear the volume's `-wal`/`-shm`. Follow the
+> steps below exactly.
+
 ```bash
 cd /Users/roby1/Documents/Claude/Projects/PrimeRush-Bot
-# 0. Collapse the WAL so the single .db file is complete & consistent before copying
-sqlite3 data/supportbot.db "PRAGMA wal_checkpoint(TRUNCATE);"
 
-# 1. BACK UP Railway's current DB first (same mechanism you used on 2026-07-04).
-#    Confirm exact subcommand with `railway volume --help` (CLI versions differ);
-#    or use the Railway dashboard's volume file browser.
+# 0. Make a clean, WAL-free, integrity-checked copy of the LOCAL db.
+#    rm first — VACUUM INTO refuses to overwrite an existing file (silent skip = you
+#    upload a stale copy).
+rm -f data/supportbot_clean.db
+sqlite3 data/supportbot.db "PRAGMA integrity_check;"                  # must print: ok
+sqlite3 data/supportbot.db "PRAGMA wal_checkpoint(TRUNCATE);"
+sqlite3 data/supportbot.db "VACUUM INTO 'data/supportbot_clean.db';"
+sqlite3 data/supportbot_clean.db "PRAGMA integrity_check;"           # must print: ok
+# sanity — confirm the copy has what you expect before uploading, e.g.:
+sqlite3 data/supportbot_clean.db "SELECT count(*) FROM conversations WHERE player_id!='';"
+
+# 1. BACK UP Railway's current DB first (your undo).
+railway link            # select the SupportBot service (project supportbot-service / service web)
 railway volume files download web-volume /data/supportbot.db ./railway-supportbot-backup.db
 
-# 2. Upload the local DB over it
-railway volume files upload web-volume ./data/supportbot.db /data/supportbot.db
+# 2. Upload the CLEAN copy over the volume DB, THEN wipe the stale WAL/SHM sidecars.
+railway volume files upload data/supportbot_clean.db /data/supportbot.db --overwrite
+printf '' > /tmp/empty
+railway volume files upload /tmp/empty /data/supportbot.db-wal --overwrite
+railway volume files upload /tmp/empty /data/supportbot.db-shm --overwrite
 
-# 3. Restart primebot so it opens the new DB cleanly (dashboard "Restart", or)
+# 3. Restart primebot so it reopens the clean DB (dashboard "Restart", or)
 railway redeploy
 
-# 4. Verify (should now show real counts, not empty arrays)
+# 4. Verify (should show real counts, not empty arrays, and NOT 500)
 curl -s -H "Authorization: Bearer $SUPPORT_SERVICE_API_KEY" \
   https://primebot.up.railway.app/api/dashboard/suggestions/summary
+curl -s -o /dev/null -w "suggestions: %{http_code}\n" \
+  -H "Authorization: Bearer $SUPPORT_SERVICE_API_KEY" \
+  "https://primebot.up.railway.app/api/dashboard/suggestions?limit=1"   # want 200, not 500
 ```
-Caution: step 2 REPLACES the Railway DB entirely — step 1's backup is your undo. If the
-Railway DB already held anything you care about (e.g. live shadow-test rows), merge instead
-of overwrite. After this, the Ticket Review page shows all ~2,826 tickets.
+Notes:
+- Step 2 REPLACES the Railway DB entirely — step 1's backup is your undo. If the volume
+  already held rows you care about (e.g. live shadow-test rows), merge instead of overwrite.
+- Build the `VACUUM INTO` copy on your own machine, not inside the Claude sandbox — sqlite
+  errors with "disk I/O error" over the Cowork mount.
+- The `ticket_translations`/enrichment columns can't regenerate on Railway (the CSV +
+  `backfill_out/raw/` inputs are gitignored), so this upload is the ONLY way To/From/Date/SID
+  data and cached translations reach live — a code-only deploy leaves them blank.
 
 ## D. Remaining build items (not done here)
 
