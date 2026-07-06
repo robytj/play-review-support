@@ -121,6 +121,37 @@ Not yet built (deliberately — it's the only path that writes to Discord and is
 
 ---
 
+## C.5 Sync the local DB to the primebot Railway volume
+
+The tickets/suggestions/KB live in the LOCAL `data/supportbot.db`. Railway's primebot
+has its own volume DB (`/data/supportbot.db` on volume `web-volume`) — it stays empty
+until you upload. `/api/dashboard/suggestions/summary` returning `{"by_source":[],"by_tier":[]}`
+means "wired correctly, no data yet" — this is the fix.
+
+```bash
+cd /Users/roby1/Documents/Claude/Projects/PrimeRush-Bot
+# 0. Collapse the WAL so the single .db file is complete & consistent before copying
+sqlite3 data/supportbot.db "PRAGMA wal_checkpoint(TRUNCATE);"
+
+# 1. BACK UP Railway's current DB first (same mechanism you used on 2026-07-04).
+#    Confirm exact subcommand with `railway volume --help` (CLI versions differ);
+#    or use the Railway dashboard's volume file browser.
+railway volume files download web-volume /data/supportbot.db ./railway-supportbot-backup.db
+
+# 2. Upload the local DB over it
+railway volume files upload web-volume ./data/supportbot.db /data/supportbot.db
+
+# 3. Restart primebot so it opens the new DB cleanly (dashboard "Restart", or)
+railway redeploy
+
+# 4. Verify (should now show real counts, not empty arrays)
+curl -s -H "Authorization: Bearer $SUPPORT_SERVICE_API_KEY" \
+  https://primebot.up.railway.app/api/dashboard/suggestions/summary
+```
+Caution: step 2 REPLACES the Railway DB entirely — step 1's backup is your undo. If the
+Railway DB already held anything you care about (e.g. live shadow-test rows), merge instead
+of overwrite. After this, the Ticket Review page shows all ~2,826 tickets.
+
 ## D. Remaining build items (not done here)
 
 - **Phase 6** go-live send path + Settings card (the only Discord-write path; admin-gated, token restore checklist).
