@@ -581,7 +581,12 @@ def _purchase_reply(session, meta: dict, ctx) -> list[dict]:
         if recent:
             lines.append("Most recent:")
             for r in recent:
-                bits = [r["date"], r.get("product") or "purchase"]
+                product = r.get("product") or "purchase"
+                if r.get("qty"):
+                    product = f"{product} ×{r['qty']}"
+                bits = [r["date"], product]
+                if r.get("amount"):
+                    bits.append(r["amount"])
                 if r.get("status"):
                     bits.append(r["status"])
                 lines.append("• " + " — ".join(str(b) for b in bits))

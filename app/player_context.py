@@ -67,16 +67,21 @@ _STAT_SUM_FIELDS = ("totalKills", "totalWins", "totalLosses", "totalDamage",
                     "totalHeadshotKills", "matchMvpCount", "totalTimeSpent")
 _STAT_MAX_FIELDS = ("longestKillStreak",)
 
-# user.transaction per-item fields: paymentSystem/purchasedTime are confirmed; the
-# product/status names are tolerant .get() fallbacks until the probe pins them down.
+# user.transaction per-item fields — confirmed by live probe 2026-07-07:
+# actualPrice.{amount,currency,productId}, offerId, orderQuantity, type, response,
+# transactionId, pricingOption.paymentSystem, purchasedTime. There is no literal
+# "status" field; `response` carries the outcome string.
 _TXN_PROJECTION = {
     "pricingOption.paymentSystem": 1,
     "purchasedTime": 1,
-    "productName": 1,
-    "product": 1,
-    "pricingOption.productName": 1,
-    "status": 1,
-    "state": 1,
+    "actualPrice.productId": 1,
+    "actualPrice.amount": 1,
+    "actualPrice.currency": 1,
+    "offerId": 1,
+    "orderQuantity": 1,
+    "type": 1,
+    "response": 1,
+    "transactionId": 1,
 }
 _TXN_SCAN_LIMIT = 200   # newest N transactions considered for the summary
 _RECENT_TXNS = 5
@@ -210,14 +215,21 @@ def _txn_summary(db, user_id) -> dict | None:
         if not system:
             continue  # paymentSystem set = real money (SPEC-08 §6); unset = soft currency
         dt = _to_dt(d.get("purchasedTime"))
-        product = (d.get("productName") or _get_path(d, "pricingOption.productName")
-                   or d.get("product"))
-        status = d.get("status") or d.get("state")
+        # Probe-confirmed names: product = actualPrice.productId (fallback offerId);
+        # outcome lives in `response`; amount/currency from actualPrice.
+        product = _get_path(d, "actualPrice.productId") or d.get("offerId")
+        status = d.get("response") or d.get("type")
+        amount = _get_path(d, "actualPrice.amount")
+        currency = _get_path(d, "actualPrice.currency")
+        qty = d.get("orderQuantity")
         real.append({
             "date": dt.date().isoformat() if dt else None,
             "payment_system": str(system),
             "product": str(product) if product is not None else None,
             "status": str(status) if status is not None else None,
+            "amount": (f"{amount:g} {currency}" if isinstance(amount, (int, float))
+                       and currency else None),
+            "qty": qty if isinstance(qty, int) and qty > 1 else None,
             "_dt": dt,
         })
         systems.add(str(system))
