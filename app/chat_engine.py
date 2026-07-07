@@ -83,6 +83,26 @@ _BAN_RE = re.compile(
     re.IGNORECASE,
 )
 
+# Recognition thanks (payer-aware, PLAYER_DATA_MAP §6). Deterministic templates
+# appended to the recognition fallback; the Haiku phrasing call only ever sees the
+# band word (facts["supporter"] = "high"|"yes"), never a number. HARD rules: no
+# amounts, totals, currencies, or counts anywhere in these strings; never the
+# words "payer"/"spender"/"VIP"; and no thanks at all for banned players -- next
+# to a ban appeal it reads as mockery. payer_tier deliberately does NOT gate the
+# thanks: a lapsed big supporter still deserves the gratitude.
+_THANKS_HIGH = (
+    "And a huge thank-you for being one of our biggest supporters — it genuinely "
+    "keeps the game running.",
+    "Huge thanks as well for being one of our biggest supporters — support like "
+    "yours genuinely keeps the game running.",
+    "And truly, thank you for being one of our strongest supporters — it means a "
+    "lot to the whole team and keeps PrimeRush alive.",
+)
+_THANKS_SUPPORTER = (
+    "Thanks so much for supporting the game, too — it really does help!",
+    "And thank you for supporting the game — we appreciate you!",
+)
+
 _YES = {"yes", "y", "yep", "yeah", "yes please", "sure", "ok", "okay", "correct",
         "that's me", "thats me", "sim", "si", "sí"}
 _NO = {"no", "n", "nope", "nah", "não", "nao", "not me", "wrong", "no thanks",
@@ -445,6 +465,22 @@ def _pick_highlight(stats: dict | None) -> str | None:
     return None
 
 
+def _supporter_thanks(ctx, session_id: int) -> str | None:
+    """Deterministic thanks line for the recognition step, or None. Driven by
+    supporter_band (HIGH/SUPPORTER/NONE); banned players (is_banned/chatBanned)
+    never get one. Variant picked by session-id hash for variety."""
+    if ctx is None or ctx.is_banned or ctx.chat_banned:
+        return None
+    band = getattr(ctx, "supporter_band", "NONE")
+    if band == "HIGH":
+        variants = _THANKS_HIGH
+    elif band == "SUPPORTER":
+        variants = _THANKS_SUPPORTER
+    else:
+        return None
+    return variants[hash(session_id) % len(variants)]
+
+
 def _recognition(session) -> list[dict]:
     ctx = player_context.get_player_context(session["sid"]) if session["sid"] else None
     _update(session["id"], state="ISSUE_LOOP")
@@ -453,12 +489,17 @@ def _recognition(session) -> list[dict]:
         return [_add_msg(session["id"], "bot", "text",
                          f"Thanks, {session['player_name'] or 'there'}! {ISSUE_PROMPT}")]
 
+    thanks = _supporter_thanks(ctx, session["id"])
     facts = {
         "player_name": ctx.nickname,
         "playing_since": ctx.playing_since,
         "matches_played": ctx.matches_played,
         "highlight": _pick_highlight(ctx.stats),
     }
+    if thanks:
+        # Haiku only ever sees the band word -- no counts/amounts exist anywhere
+        # in its prompt, so the model cannot leak figures (Package A hard rule).
+        facts["supporter"] = "high" if ctx.supporter_band == "HIGH" else "yes"
     text = None
     try:
         text = llm.phrase_recognition(facts)  # the ONE scripted-phase Haiku call
@@ -474,6 +515,8 @@ def _recognition(session) -> list[dict]:
             else f"Great to see you, {ctx.nickname}!"
         if facts["highlight"]:
             line += f" And {facts['highlight']} — seriously impressive."
+        if thanks:
+            line += f" {thanks}"
         text = line
     rec = _add_msg(session["id"], "bot", "recognition", text, {"facts": facts})
     prompt = _add_msg(session["id"], "bot", "text", ISSUE_PROMPT)
@@ -579,7 +622,7 @@ def _issue_loop(session, text: str) -> list[dict]:
 def _purchase_reply(session, meta: dict, ctx) -> list[dict]:
     """Summaries only, never raw records (SPEC-08 §3.3)."""
     t = ctx.transactions
-    if not t["real_money_count"]:
+    if not t["real_money_count"] and not t.get("refunded_count"):
         text = ("I checked your account and I don't see any real-money purchases on it. "
                 "If you were charged, it may be under a different account or store login "
                 "— happy to flag it for the team.")
@@ -587,12 +630,19 @@ def _purchase_reply(session, meta: dict, ctx) -> list[dict]:
         # user.transaction records COMPLETED purchases only (failed payments are
         # not written to Mongo today; they arrive from a separate system in a
         # future version) — so frame the list as confirmed-delivered and route
-        # "charged but missing" to escalation.
+        # "charged but missing" to escalation. Refunded purchases stay listed,
+        # flagged, and excluded from the completed count (PLAYER_DATA_MAP §2).
         lines = [f"Here's what I can see on your account ({ctx.sid}) — "
                  f"these all completed successfully:",
                  f"• {t['real_money_count']} purchase(s) via "
-                 f"{', '.join(t['payment_systems']) or 'unknown store'}",
-                 f"• First purchase {t['first_purchase']}, most recent {t['last_purchase']}"]
+                 f"{', '.join(t['payment_systems']) or 'unknown store'}"]
+        if t.get("first_purchase"):
+            lines.append(f"• First purchase {t['first_purchase']}, "
+                         f"most recent {t['last_purchase']}")
+        if t.get("refunded_count"):
+            lines.append(f"• {t['refunded_count']} purchase(s) show as refunded — "
+                         "refunds are issued by the store (Apple/Google/XSolla), "
+                         "not in-game")
         recent = [r for r in t["recent"] if r.get("date")]
         if recent:
             lines.append("Most recent:")
@@ -605,6 +655,8 @@ def _purchase_reply(session, meta: dict, ctx) -> list[dict]:
                     bits.append(_clip(r.get("amount")))
                 if r.get("payment_system"):
                     bits.append(_clip(r.get("payment_system"), 24))
+                if r.get("status") == "refunded":
+                    bits.append("refunded")
                 lines.append("• " + " — ".join(str(b) for b in bits if b))
         lines.append("If you were charged for something that isn't listed here, it "
                      "didn't reach your account — tell me which purchase and I'll "

@@ -8,8 +8,10 @@ Support Chat tab live:
 Prints, per SID: the fully resolved PlayerContext (emails masked). Then a
 field-discovery dump of ONE user.transaction document (shape only -- dotted path ->
 type, values redacted) so the per-item product/status field names can be pinned
-down, and an existence check for the purchase.aggregated / topspender.* collections
-(webstore purchases possibly live there).
+down, an existence check for the purchase.aggregated / topspender.* collections
+(webstore purchases possibly live there), and the same shape dump of ONE
+purchase.aggregated doc keyed to the first resolved userId, so the aggregated-spend
+field names used by player_context._agg_purchases() get pinned next run.
 
 SAFE BY DESIGN, same rules as scripts/inspect_mongo_schema.py: every query goes
 through app/player_context.py (projection-only, keyed to one userId, explicit
@@ -73,10 +75,12 @@ def main() -> int:
         d = asdict(ctx)
         d["email"] = ctx.email_masked           # never print the raw address
         d["device_ids"] = f"<{len(ctx.device_ids)} device id(s)>"
+        # agg_purchases carries spend figures -- keys only, values redacted.
+        d["agg_purchases"] = sorted(ctx.agg_purchases) if ctx.agg_purchases else None
         for k in ("sid", "user_id", "nickname", "state", "level", "matches_played",
                   "create_time", "location", "build_version", "chat_banned", "email",
-                  "device_ids", "payer_tier", "report_count_90d",
-                  "banned_device_overlap", "is_banned"):
+                  "device_ids", "payer_tier", "supporter_band", "agg_purchases",
+                  "report_count_90d", "banned_device_overlap", "is_banned"):
             print(f"  {k:22s} {d.get(k)}")
         print(f"  {'stats':22s} {d.get('stats')}")
         print(f"  {'transactions':22s} {d.get('transactions')}")
@@ -119,8 +123,32 @@ def main() -> int:
     print(f"  purchase.aggregated exists: {'purchase.aggregated' in names}")
     tops = sorted(n for n in names if n.startswith("topspender"))
     print(f"  topspender.* collections  : {tops or 'none found'}")
+    print()
+
+    # ---- field discovery: one purchase.aggregated doc, shape only ----
+    print("== purchase.aggregated field discovery (1 doc, shape only, values redacted) ==")
+    if "purchase.aggregated" not in names:
+        print("  (collection missing -- skipping)")
+    elif resolved_uid is None:
+        print("  (no sample SID resolved -- skipping)")
+    else:
+        # Keyed rollup doc: userId first, then _id (rollups are often keyed by the
+        # user id itself) -- same fallback order as player_context._agg_purchases.
+        doc = _probe_find_one(db["purchase.aggregated"], {"userId": resolved_uid},
+                              allow_full_doc=True)
+        if not doc:
+            doc = _probe_find_one(db["purchase.aggregated"], {"_id": resolved_uid},
+                                  allow_full_doc=True)
+        if doc:
+            for path, typ in sorted(_shape(doc).items()):
+                print(f"  {path:45s} {typ}")
+            print(f"  -> _agg_purchases() currently keeps: {sorted(player_context._AGG_FIELDS)}")
+        else:
+            print("  (no purchase.aggregated doc for the first resolved user)")
+
     print("\nDone. Paste this output back so the per-item transaction fields "
-          "(product/status) can be confirmed in app/player_context.py.")
+          "(product/status) and the purchase.aggregated field names can be "
+          "confirmed in app/player_context.py.")
     return 0
 
 

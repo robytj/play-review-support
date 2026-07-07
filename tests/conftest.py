@@ -111,6 +111,8 @@ def make_ctx(**over) -> PlayerContext:
                                   "product": "gems_500", "status": "succeeded"}],
                       "scanned": 12},
         payer_tier="ACTIVE",
+        agg_purchases=None,
+        supporter_band="SUPPORTER",   # 3 real-money purchases -> light thanks band
         report_count_90d=1,
         banned_device_overlap=False,
         is_banned=False,

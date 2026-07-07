@@ -53,6 +53,10 @@ def _apply(cfg: dict):
     chat_cfg = cfg.get("chat", {}) or {}
     g["CHAT_ENABLED"] = bool(chat_cfg.get("enabled", False))
     g["TAU_CLARIFY"] = float(chat_cfg.get("tau_clarify", 0.45))
+    # HIGH supporter threshold for the recognition thanks (Package A): at least
+    # this many completed real-money purchases (direct count or the
+    # purchase.aggregated rollup) earns the "biggest supporters" gratitude line.
+    g["CHAT_HIGH_PAYER_MIN_PURCHASES"] = int(chat_cfg.get("high_payer_min_purchases", 20))
     budgets = cfg.get("chat_budgets", {}) or {}
     g["CHAT_TIER2_PER_SESSION"] = int(budgets.get("tier2_per_session", 8))
     g["CHAT_MESSAGES_PER_SESSION"] = int(budgets.get("messages_per_session", 30))

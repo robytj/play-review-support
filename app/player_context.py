@@ -14,7 +14,8 @@ runs in degraded (KB-only) mode.
 
 Env (existing vars unchanged): MONGO_URI, MONGO_ACCOUNT_COLLECTION, MONGO_SID_FIELD.
 New: BANNED_STATES (comma-separated account.state values that count as banned,
-default "Locked,Suspended,Banned").
+default "Locked,Suspended,Banned" -- compared case-insensitively, since raw Mongo
+is PascalCase but some API layers lowercase the state).
 """
 from __future__ import annotations
 
@@ -24,12 +25,22 @@ import time
 from dataclasses import dataclass, field
 from datetime import datetime, timedelta, timezone
 
+from app import config
+
 MONGO_URI = os.environ.get("MONGO_URI", "")
 MONGO_ACCOUNT_COLLECTION = os.environ.get("MONGO_ACCOUNT_COLLECTION", "account")
 MONGO_SID_FIELD = os.environ.get("MONGO_SID_FIELD", "shortId")
 BANNED_STATES = {
     s.strip() for s in os.environ.get("BANNED_STATES", "Locked,Suspended,Banned").split(",") if s.strip()
 }
+# Raw Mongo stores account.state in PascalCase ('Locked') but some API layers
+# lowercase it ('locked'), and the live probe also returned 'Verified'/'Guest' --
+# so ban membership is checked case-insensitively (PLAYER_DATA_MAP §1).
+_BANNED_STATES_CI = {s.lower() for s in BANNED_STATES}
+
+
+def _is_banned_state(state) -> bool:
+    return str(state or "").strip().lower() in _BANNED_STATES_CI
 
 # Session-scoped cache: the chat engine re-reads the context on most ISSUE_LOOP
 # turns; 10 minutes matches the session idle timeout so a context never outlives
@@ -83,6 +94,8 @@ _TXN_PROJECTION = {
     "response": 1,
     "transactionId": 1,
     "rewards": 1,   # what the purchase contained -> human description
+    "isRefunded": 1,     # display-only refund flag (PLAYER_DATA_MAP §2)
+    "refundedTime": 1,
 }
 
 # Friendly store names for player-facing summaries (raw values live in the DB:
@@ -100,11 +113,12 @@ def _payment_label(s) -> str:
     return _PAYMENT_LABELS.get(str(s).strip().lower(), str(s))
 
 
-# rewards[] inner keys are not probe-confirmed yet -- tolerant extraction, and
-# scripts/probe_player_context.py dumps one entry's shape to pin them down.
-_REWARD_NAME_KEYS = ("name", "itemName", "displayName", "title", "description",
-                     "rewardType", "type", "itemId", "id")
-_REWARD_QTY_KEYS = ("amount", "quantity", "count", "qty")
+# rewards[] inner keys CONFIRMED (PLAYER_DATA_MAP §2, IndusAdminUi source +
+# live probe): {id, name, url, quantity, rarity}. Prefer the human "name", fall
+# back to "id"; a couple of extra candidates stay as cheap tolerance for
+# older/odd docs where names resolve from the offer/config layer instead.
+_REWARD_NAME_KEYS = ("name", "displayName", "title", "description", "id", "itemId")
+_REWARD_QTY_KEYS = ("quantity", "amount", "count", "qty")
 
 
 def _txn_description(d: dict) -> str | None:
@@ -145,6 +159,9 @@ class PlayerContext:
     stats: dict | None = None         # aggregated user.stats, None if source failed
     transactions: dict | None = None  # summary dict, None if source failed
     payer_tier: str = "NONE"          # ACTIVE | DORMANT | LAPSED | NONE
+    agg_purchases: dict | None = None  # purchase.aggregated rollup, None if failed/absent
+    supporter_band: str = "NONE"      # HIGH | SUPPORTER | NONE -- only the band word
+                                      # may cross into chat, never the numbers behind it
     report_count_90d: int | None = None
     banned_device_overlap: bool = False
     is_banned: bool = False
@@ -284,9 +301,12 @@ def _txn_summary(db, user_id) -> dict | None:
             continue  # paymentSystem set = real money (SPEC-08 §6); unset = soft currency
         dt = _to_dt(d.get("purchasedTime"))
         # Probe-confirmed names: product = actualPrice.productId (fallback offerId);
-        # amount/currency from actualPrice. Outcome: see _short_status().
+        # amount/currency from actualPrice. Outcome: see _short_status() -- except
+        # refunds, where the isRefunded flag overrides whatever `response` says
+        # (PLAYER_DATA_MAP §2: refunds are store-side, display-only in the admin).
+        refunded = bool(d.get("isRefunded"))
         product = _get_path(d, "actualPrice.productId") or d.get("offerId")
-        status = _short_status(d)
+        status = "refunded" if refunded else _short_status(d)
         amount = _get_path(d, "actualPrice.amount")
         currency = _get_path(d, "actualPrice.currency")
         qty = d.get("orderQuantity")
@@ -300,11 +320,17 @@ def _txn_summary(db, user_id) -> dict | None:
                        and currency else None),
             "qty": qty if isinstance(qty, int) and qty > 1 else None,
             "_dt": dt,
+            "_refunded": refunded,
         })
         systems.add(_payment_label(system))
-    dts = [t["_dt"] for t in real if t["_dt"]]
+    # Refunded purchases stay LISTED (status 'refunded') but are excluded from the
+    # counts and dates that drive payer tier / supporter band -- money that went
+    # back to the player earns no recognition.
+    kept = [t for t in real if not t["_refunded"]]
+    dts = [t["_dt"] for t in kept if t["_dt"]]
     summary = {
-        "real_money_count": len(real),
+        "real_money_count": len(kept),
+        "refunded_count": len(real) - len(kept),
         "first_purchase": min(dts).date().isoformat() if dts else None,
         "last_purchase": max(dts).date().isoformat() if dts else None,
         # NOTE (confirmed by John 2026-07-07): user.transaction stores COMPLETED
@@ -313,7 +339,8 @@ def _txn_summary(db, user_id) -> dict | None:
         # this summary means the purchase went through server-side; absence of a
         # charged purchase = escalate for manual verification.
         "payment_systems": sorted(systems),
-        "recent": [{k: v for k, v in t.items() if k != "_dt"} for t in real[:_RECENT_TXNS]],
+        "recent": [{k: v for k, v in t.items() if not k.startswith("_")}
+                   for t in real[:_RECENT_TXNS]],
         "scanned": len(docs),
     }
     summary["_last_dt"] = max(dts) if dts else None
@@ -330,6 +357,59 @@ def _payer_tier(last_purchase_dt: datetime | None) -> str:
     if days <= 90:
         return "DORMANT"
     return "LAPSED"
+
+
+# purchase.aggregated per-player rollup (PLAYER_DATA_MAP §2: totalPurchasesCount,
+# purchasesCount{InApp:n}, plus the topspender fields total/currency/gamesPlayed).
+# Field names are tolerant until the probe pins them -- scripts/probe_player_context.py
+# dumps one doc's shape (types only) next run. Projection-only, keyed to the ONE
+# resolved userId (with an _id fallback: rollup collections are often keyed by the
+# user id itself).
+_AGG_FIELDS = ("total", "currency", "totalPurchasesCount", "purchasesCount", "gamesPlayed")
+_AGG_PROJECTION = {"userId": 1, **{f: 1 for f in _AGG_FIELDS}}
+
+
+def _agg_purchases(db, user_id) -> dict | None:
+    coll = db["purchase.aggregated"]
+    doc = coll.find_one({"userId": user_id}, _AGG_PROJECTION)
+    if doc is None:
+        doc = coll.find_one({"_id": user_id}, _AGG_PROJECTION)
+    if not doc:
+        return None
+    out = {k: doc[k] for k in _AGG_FIELDS if k in doc}
+    return out or None
+
+
+def _agg_purchase_count(agg: dict | None):
+    """Tolerant read of the rollup's purchase count: totalPurchasesCount, else
+    purchasesCount as a number or a {bucket: n} map summed."""
+    if not isinstance(agg, dict):
+        return None
+    v = agg.get("totalPurchasesCount")
+    if isinstance(v, (int, float)):
+        return v
+    pc = agg.get("purchasesCount")
+    if isinstance(pc, (int, float)):
+        return pc
+    if isinstance(pc, dict):
+        nums = [n for n in pc.values() if isinstance(n, (int, float))]
+        return sum(nums) if nums else None
+    return None
+
+
+def _supporter_band(real_money_count, agg: dict | None) -> str:
+    """HIGH when completed real-money purchases (direct count or the
+    purchase.aggregated rollup) reach chat.high_payer_min_purchases; SUPPORTER
+    for >=1; else NONE. Only this band word may reach the chat layer -- the
+    numbers behind it never do (Package A hard rule)."""
+    # config attribute looked up at call time (hot-reload rule, see app/config.py)
+    high_min = int(getattr(config, "CHAT_HIGH_PAYER_MIN_PURCHASES", 20) or 20)
+    count = real_money_count if isinstance(real_money_count, (int, float)) else 0
+    if count >= high_min or (_agg_purchase_count(agg) or 0) >= high_min:
+        return "HIGH"
+    if count >= 1:
+        return "SUPPORTER"
+    return "NONE"
 
 
 def _report_count_90d(db, user_id) -> int:
@@ -403,7 +483,7 @@ def get_player_context(sid: str) -> PlayerContext | None:
         chat_banned=bool(acc.get("chatBanned")),
         email=_get_path(acc, "email.id"),
         device_ids=device_ids,
-        is_banned=state in BANNED_STATES,
+        is_banned=_is_banned_state(state),
     )
 
     # Each enrichment source degrades independently (SPEC-08 §6).
@@ -418,6 +498,16 @@ def get_player_context(sid: str) -> PlayerContext | None:
         ctx.transactions = txn
     except Exception as e:
         print(f"[warn] player_context: user.transaction lookup failed for {sid} ({e!r})")
+
+    try:
+        ctx.agg_purchases = _agg_purchases(db, ctx.user_id)
+    except Exception as e:
+        print(f"[warn] player_context: purchase.aggregated lookup failed for {sid} ({e!r})")
+
+    # Derived AFTER both purchase sources so either can vouch for the band when
+    # the other degraded to None.
+    ctx.supporter_band = _supporter_band(
+        (ctx.transactions or {}).get("real_money_count"), ctx.agg_purchases)
 
     try:
         ctx.report_count_90d = _report_count_90d(db, ctx.user_id)
