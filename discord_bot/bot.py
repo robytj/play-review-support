@@ -28,7 +28,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 import discord
 from discord.ext import commands
 
-from app import db, router
+from app import db, router, sid_lookup
 from app import config as app_config
 from app.config import (
     DISCORD_BOT_TOKEN, DISCORD_STAFF_ROLE_ID, DISCORD_ESCALATION_CHANNEL_ID,
@@ -58,6 +58,22 @@ def _is_staff(member: discord.Member) -> bool:
     if not _STAFF_ROLE_IDS:
         return member.guild_permissions.manage_messages
     return any(str(r.id) in _STAFF_ROLE_IDS for r in getattr(member, "roles", []))
+
+
+# SPEC-01 §3.1 -- the "find your SID" helper appended to the bot's reply on a
+# ticket whose SID didn't resolve. Localized pt-BR primary + EN, one shared
+# template (app/sid_lookup.SID_HELPER_TEXT; a copy is seeded into `canned` by
+# db._seed_sid_helper so the team can edit it where approved reply templates
+# live). Ships INERT under shadow mode: this text only ever lands inside a
+# PENDING suggestion -- approve-to-send stays the only Discord-write path.
+# TODO(John): attach the two helper screenshots (logged-in + guest) once
+# provided; text-only until then.
+_SID_HELPER_SUFFIX = "\n\n" + sid_lookup.SID_HELPER_TEXT
+
+
+def _with_sid_helper(reply_text: str, sid_resolved: bool) -> str:
+    """Append the SID helper to a ticket reply when the ticket has no resolved SID."""
+    return reply_text if sid_resolved else reply_text + _SID_HELPER_SUFFIX
 
 
 _ACCOUNT_ID_FIELD_RE = re.compile(r"id\s+da\s+sua\s+conta", re.IGNORECASE)   # "Qual é o ID da sua conta?"
@@ -174,22 +190,37 @@ async def on_message(message: discord.Message):
         # bot is watching without it speaking yet.
         conv_id = router.get_or_create_conversation("discord", external_id, player_id=ticket_player_id)
 
-        # SID-first (§4B): resolve the player's SID at ingest so the send gate has one.
-        # Best-effort: validate a card-supplied id, else an email in the text. Never fatal.
+        # SID-first ingest resolution (SPEC-01 §3.1): claimed SID (validated) beats an
+        # email found in the text, beats a Mongo-validated body scan; record which
+        # method won in sid_source. Best-effort: Mongo down -> stays NULL, never fatal.
+        sid_resolved = False
         try:
-            from app import sid_lookup
             m = re.search(r"[\w.+-]+@[\w-]+\.[\w.-]+", question_text or "")
-            sid = sid_lookup.resolve_sid(email=(m.group(0) if m else None), claimed_sid=ticket_player_id)
+            sid, sid_source = sid_lookup.resolve_from_ticket(
+                claimed_sid=ticket_player_id, email=(m.group(0) if m else None),
+                body_text=question_text)
             if sid:
+                # first resolution wins: never clobber a row something already resolved
+                # (sid_source set); DO replace the raw unvalidated card id if present.
                 conn.execute(
-                    "UPDATE conversations SET player_id=? WHERE id=? AND (player_id IS NULL OR player_id='')",
-                    (sid, conv_id))
+                    "UPDATE conversations SET player_id=?, sid_source=? "
+                    "WHERE id=? AND sid_source IS NULL",
+                    (sid, sid_source, conv_id))
                 conn.commit()
+                sid_resolved = True
+            else:
+                row = conn.execute("SELECT player_id, sid_source FROM conversations WHERE id=?",
+                                   (conv_id,)).fetchone()
+                sid_resolved = bool(row and row["sid_source"])  # resolved on an earlier message
         except Exception as e:
             print(f"[warn] ingest SID lookup failed ({e!r})")
 
         router._log_message(conv_id, "user", None, question_text)
         result = router.answer(question_text, conv_id)
+        # SID invalid/missing -> the (approved-before-send) reply also asks for the
+        # SID with the find-your-SID helper embedded (SPEC-01 §3.1). Ticket is never
+        # blocked -- it just lands with player_id NULL until the player answers.
+        reply_text = _with_sid_helper(result["text"], sid_resolved)
 
         # Persist ONE pending suggestion per ticket (skip if this conversation already has
         # an open one, so player follow-ups don't spawn duplicates in the review grid).
@@ -202,7 +233,7 @@ async def on_message(message: discord.Message):
                     "INSERT INTO suggestions (conversation_id, source, question, suggested_answer, "
                     "tier, retrieved_chunks, staff_answer, status) "
                     "VALUES (?, 'discord', ?, ?, ?, ?, NULL, 'pending')",
-                    (conv_id, question_text, result["text"], result["tier"],
+                    (conv_id, question_text, reply_text, result["tier"],
                      json.dumps(result.get("chunks") or [], ensure_ascii=False)))
                 conn.commit()
         except Exception as e:
@@ -236,7 +267,14 @@ async def on_message(message: discord.Message):
     await target_channel.trigger_typing() if hasattr(target_channel, "trigger_typing") else None
 
     result = router.answer(question_text, conv_id)
-    sent = await target_channel.send(result["text"])
+    reply_text = result["text"]
+    if ticket_question is not None:
+        # First reply on a freshly-opened Ticket King ticket (SPEC-01 §3.1): if the
+        # card carried no SID-shaped id, ask for it with the find-your-SID helper.
+        has_sid_shaped_id = bool(
+            ticket_player_id and sid_lookup.SID_RE.fullmatch(ticket_player_id.strip().upper()))
+        reply_text = _with_sid_helper(reply_text, has_sid_shaped_id)
+    sent = await target_channel.send(reply_text)
     _reply_message_map[sent.id] = result["message_id"]
 
     for emoji in ("👍", "👎"):

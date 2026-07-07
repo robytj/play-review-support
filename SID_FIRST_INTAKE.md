@@ -61,3 +61,53 @@ informational; for live it's a precondition.
 
 **Net:** intake capture (team) + ingestion-time resolution (bot) means new tickets start
 at ~100% SID coverage instead of ~7%, and every downstream action gets faster and safer.
+
+## Runbook — manual wiring steps (SPEC-01, owner: John)
+
+The code side of SPEC-01 is live (ingestion-time resolution + `sid_source` +
+the SID-coverage metric). Two intake surfaces need one-time **manual admin
+setup** — there is deliberately no email-sending code in this repo.
+
+### A. Gmail auto-acknowledgement (email surface)
+
+The template is `templates/email_autoack.txt` (EN + pt-BR in one reply; the
+pt-BR block is the primary audience). To wire it as a filter autoresponder on
+the support inbox:
+
+1. In the support Gmail account: **Settings → See all settings → Advanced →
+   enable "Templates"** (formerly canned responses), save.
+2. Compose a new email, paste the body of `templates/email_autoack.txt`
+   (both language sections, EN subject line), then **⋮ → Templates → Save
+   draft as template → Save as new template**.
+3. **Settings → Filters and Blocked Addresses → Create a new filter**:
+   `To: <the support address>`, and exclude ourselves with
+   `From: -supergaming.com` so staff replies never trigger it.
+4. Click **Create filter**, tick **"Send template"** and pick the saved
+   template. Done — every inbound player email gets the ticket-received +
+   SID-request ack automatically.
+5. Caveats: Gmail sends a template at most once per address per 4 days
+   (built-in rate limit, fine for our volume), and "Send template" only
+   appears after step 1's Templates toggle is on. Re-do steps 2/4 whenever
+   the template file changes.
+
+### B. Freshdesk required "Player SID" custom field
+
+1. **Admin → Workflows → Ticket Fields → Create new field → Single-line text.**
+2. Label (customer-facing): **Player SID** (pt: *ID de jogador (SID)*).
+3. In the field's customer description, paste the helper line: *"8-character
+   code — open Prime Rush → Settings (gear) → Profile → tap the code under
+   your name to copy. / Código de 8 caracteres — Prime Rush → Configurações →
+   Perfil → toque no código abaixo do seu nome."* (link the KB article
+   `Finding your SID (player ID)` once the portal is public).
+4. Behaviour checkboxes: **Customers can edit** + **Required when submitting
+   the form**. Leave "Required when closing" OFF for agents (never hard-block
+   staff on a missing SID).
+5. `scripts/load_freshdesk_tickets.py` already reads the field from exports
+   (keys tried: `player_sid`, `custom_fields.player_sid`,
+   `custom_fields.cf_player_sid`) and validates it against Mongo — confirm the
+   API key name Freshdesk generates (usually `cf_player_sid`) matches, and
+   adjust the export mapping if Freshdesk names it differently.
+
+Also pending from John (blocks the visual helper only, everything else
+shipped text-only): the two "find your SID" screenshots (logged-in + guest)
+and confirmation of the exact in-game path.

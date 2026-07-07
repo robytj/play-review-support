@@ -1,0 +1,65 @@
+Prime Rush support — email auto-acknowledgement (SPEC-01 §3.2)
+================================================================
+Plain-text template for the support inbox autoresponder. Wire-up is a MANUAL
+Gmail step (no email-sending code in this repo) — see the runbook section
+"Runbook — manual wiring steps" in SID_FIRST_INTAKE.md.
+Both languages ship in one reply: English first, pt-BR below it.
+TODO(John): screenshots of the in-game Settings → Profile screen are pending;
+this template stays text-only until they exist (email stays text anyway).
+================================================================
+
+--- ENGLISH -----------------------------------------------------
+
+Subject: We got your message — one thing that speeds everything up
+
+Hi!
+
+Thanks for contacting Prime Rush support — your message has been received
+and is in our queue.
+
+To help you faster, please reply with your Player SID (or the email address
+registered on your game account). The SID is how we securely find YOUR
+account — names can repeat; the SID can't.
+
+Don't know your SID? It takes 10 seconds:
+  1. Open Prime Rush and tap the gear (Settings).
+  2. Go to Profile.
+  3. Tap the 8-character code under your name (like AB12CD3E) to copy it,
+     then paste it into your reply.
+
+If you can't get into the game, a screenshot of your profile or settings
+screen works too, or tell us the email/Google/Apple login linked to the
+account.
+
+We'll get back to you as soon as we can. Please don't buy an item again if
+a purchase went missing — we can verify and restore it.
+
+— Prime Rush Support
+
+--- PORTUGUÊS (BRASIL) ------------------------------------------
+
+Assunto: Recebemos sua mensagem — um detalhe que acelera tudo
+
+Olá!
+
+Obrigado por falar com o suporte do Prime Rush — sua mensagem foi recebida
+e está na nossa fila.
+
+Para agilizar seu atendimento, responda com o seu ID de jogador (SID) — ou
+o e-mail cadastrado na sua conta do jogo. O SID é como encontramos a SUA
+conta com segurança: nomes podem se repetir; o SID, não.
+
+Não sabe seu ID? Leva 10 segundos:
+  1. Abra o Prime Rush e toque na engrenagem (Configurações).
+  2. Entre em Perfil.
+  3. Toque no código de 8 caracteres abaixo do seu nome (tipo AB12CD3E)
+     para copiá-lo e cole na sua resposta.
+
+Se você não consegue entrar no jogo, uma captura de tela do seu perfil ou
+das configurações também serve — ou nos diga o e-mail/login Google/Apple
+vinculado à conta.
+
+Responderemos assim que possível. Se uma compra não chegou, não compre de
+novo — conseguimos verificar e restaurar.
+
+— Suporte Prime Rush

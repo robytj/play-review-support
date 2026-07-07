@@ -26,6 +26,7 @@ from dataclasses import dataclass, field
 from datetime import datetime, timedelta, timezone
 
 from app import config
+from app.sid_lookup import SID_RE  # THE shared SID format regex (SPEC-01 §2) -- one definition, no duplicates
 
 MONGO_URI = os.environ.get("MONGO_URI", "")
 MONGO_ACCOUNT_COLLECTION = os.environ.get("MONGO_ACCOUNT_COLLECTION", "account")
@@ -50,8 +51,6 @@ _cache: dict[str, tuple[float, "PlayerContext | None"]] = {}
 
 _client = None
 _unavailable = False  # set once if the driver/URI is missing, to stop retrying
-
-SID_RE = re.compile(r"^[A-Z0-9]{8}$")
 
 # account projection -- fields confirmed from the responder's cheater/payments
 # modules (SPEC-08 §6). matchesPlayed has two known fallback spellings.

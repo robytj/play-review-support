@@ -23,6 +23,17 @@ BASE = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 TXT_DIR = os.path.join(BASE, "support_emails")
 DB_PATH = os.environ.get("DB_PATH", os.path.join(BASE, "data", "supportbot.db"))
 
+# SID-first ingest resolution (SPEC-01 §3.2). Optional: the loader stays a plain
+# sqlite3 script; if the app package (or pymongo/MONGO_URI) is unavailable the
+# resolution simply yields NULLs and ingestion proceeds unchanged.
+sys.path.insert(0, BASE)
+try:
+    from app import sid_lookup
+except Exception:
+    sid_lookup = None
+
+EMAIL_ADDR_RE = re.compile(r"[\w.+-]+@[\w-]+\.[\w.-]+")
+
 MSG_RE = re.compile(r"^From:\s*(.*?)\s{2}Date:\s*(.*)$", re.MULTILINE)
 HDR_RE = {
     "subject": re.compile(r"^Subject:\s*(.*)$", re.MULTILINE),
@@ -67,11 +78,36 @@ def extract_player_id(msgs):
     return None
 
 
+def resolve_ticket_sid(msgs, player_from):
+    """SPEC-01 §3.2: (player_id, sid_source) for one email thread -- claimed SID
+    (the id-labelled token, Mongo-validated) beats a sender-email match, beats a
+    Mongo-validated body scan. (None, None) when nothing validates or Mongo is
+    down -- best-effort, never raises, never blocks ingestion."""
+    if sid_lookup is None:
+        return None, None
+    claimed = extract_player_id(msgs)
+    m = EMAIL_ADDR_RE.search(player_from or "")   # "Name <addr>" or plain address
+    body = "\n".join((msg["text"] or "") for msg in msgs
+                     if "supergaming.com" not in (msg["from"] or ""))
+    return sid_lookup.resolve_from_ticket(
+        claimed_sid=claimed, email=(m.group(0) if m else None), body_text=body)
+
+
+def ensure_sid_source_column(conn):
+    """Loaders connect with plain sqlite3, so mirror app/db.py's idempotent
+    ALTER here in case init_db() hasn't run since the SPEC-01 migration."""
+    cols = {r[1] for r in conn.execute("PRAGMA table_info(conversations)").fetchall()}
+    if "sid_source" not in cols:
+        conn.execute("ALTER TABLE conversations ADD COLUMN sid_source TEXT")
+        conn.commit()
+
+
 def main():
     dry = "--dry-run" in sys.argv
     files = sorted(glob.glob(os.path.join(TXT_DIR, "*.txt")))
     conn = sqlite3.connect(DB_PATH)
     conn.row_factory = sqlite3.Row
+    ensure_sid_source_column(conn)
     existing = {r[0] for r in conn.execute(
         "SELECT external_id FROM conversations WHERE channel='email'").fetchall()}
 
@@ -95,15 +131,15 @@ def main():
             "participants": t["participants"],
             "gmail_thread": f"https://mail.google.com/mail/u/0/#all/{tid}",
         }, ensure_ascii=False)
-        pid = extract_player_id(t["messages"])
+        pid, sid_source = resolve_ticket_sid(t["messages"], player)
         if dry:
             loaded += 1
             msg_count += len(t["messages"])
             continue
         cur = conn.execute(
-            "INSERT INTO conversations (channel, origin, external_id, status, context, player_id, created_at, updated_at) "
-            "VALUES ('email', 'backfill', ?, 'resolved', ?, ?, ?, ?)",
-            (tid, context, pid, first_date, last_date),
+            "INSERT INTO conversations (channel, origin, external_id, status, context, player_id, sid_source, created_at, updated_at) "
+            "VALUES ('email', 'backfill', ?, 'resolved', ?, ?, ?, ?, ?)",
+            (tid, context, pid, sid_source, first_date, last_date),
         )
         cid = cur.lastrowid
         for m in t["messages"]:

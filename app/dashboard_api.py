@@ -646,7 +646,42 @@ def metrics(days: int = 7):
         round((totals["tier0"] + totals["tier1"] + totals["tier2"]) / total_msgs, 3)
         if total_msgs else None
     )
-    return {"daily": rows, "totals": totals}
+    return {"daily": rows, "totals": totals, "sid_coverage": _sid_coverage(conn)}
+
+
+_SID_SOURCES = ("claimed", "email_match", "scan", "deeplink", "manual")
+
+
+def _sid_coverage(conn, window_days: int = 30) -> dict:
+    """SID coverage (SPEC-01 §4): of the conversations created in the window, how
+    many carry a resolved player_id, and via which intake method (sid_source).
+    'null' counts rows with no recorded source -- pre-SPEC-01 history plus tickets
+    that never resolved. Baseline for the intake changes; shown in Support Settings."""
+    rows = conn.execute(
+        """
+        SELECT sid_source,
+               COUNT(*) AS n,
+               SUM(CASE WHEN player_id IS NOT NULL AND player_id != '' THEN 1 ELSE 0 END) AS with_pid
+        FROM conversations
+        WHERE created_at >= datetime('now', ?)
+        GROUP BY sid_source
+        """,
+        (f"-{int(window_days)} days",),
+    ).fetchall()
+    by_source = {s: 0 for s in (*_SID_SOURCES, "null")}
+    total = with_player_id = 0
+    for r in rows:
+        key = r["sid_source"] if r["sid_source"] in _SID_SOURCES else "null"
+        by_source[key] += r["n"]
+        total += r["n"]
+        with_player_id += r["with_pid"] or 0
+    return {
+        "window_days": window_days,
+        "total_conversations": total,
+        "with_player_id": with_player_id,
+        "pct": round(with_player_id / total, 3) if total else None,
+        "by_source": by_source,
+    }
 
 
 # -------------------------------------------------------------- tone (Phase 7) --

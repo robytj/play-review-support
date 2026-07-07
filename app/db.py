@@ -164,6 +164,12 @@ def _migrate(conn):
             "ON conversations(public_id) WHERE public_id IS NOT NULL"
         )
         conn.commit()
+    # How player_id was resolved at intake (SPEC-01 §4): claimed | email_match |
+    # scan | deeplink | manual. NULL for rows that predate this (or that never
+    # resolved) -- feeds the dashboard's SID-coverage metric by_source split.
+    if "sid_source" not in cols:
+        conn.execute("ALTER TABLE conversations ADD COLUMN sid_source TEXT")
+        conn.commit()
 
     msg_cols = {row["name"] for row in conn.execute("PRAGMA table_info(messages)").fetchall()}
     if "author_name" not in msg_cols:
@@ -305,6 +311,7 @@ def _migrate(conn):
     )
     conn.commit()
     _seed_ban_responses(conn)
+    _seed_sid_helper(conn)
 
 
 # Approved-message set for the chat agent's ban/appeal path (SPEC-08 §3.3): the bot
@@ -349,6 +356,27 @@ def _seed_ban_responses(conn):
         return
     conn.executemany(
         "INSERT INTO canned (trigger_text, answer) VALUES (?, ?)", _BAN_RESPONSE_SEEDS
+    )
+    conn.commit()
+
+
+def _seed_sid_helper(conn):
+    """SPEC-01 §2: the 'find your SID' ticket-intake helper template, seeded once
+    into `canned` -- where approved reply templates live -- so it ships INERT
+    (nothing sends without the approve-to-send flow; like the ban_response rows
+    it's seeded WITHOUT an embedding, so it can never be a Tier-0 canned match).
+    Idempotent by prefix; team edits in SupportKB always win. The text is the
+    single shared SID_HELPER_TEXT from app/sid_lookup.py (pt-BR primary + EN).
+    TODO(John): screenshots pending -- text-only for now."""
+    n = conn.execute(
+        "SELECT COUNT(*) AS n FROM canned WHERE trigger_text LIKE 'sid_helper:%'"
+    ).fetchone()["n"]
+    if n:
+        return
+    from app.sid_lookup import SID_HELPER_TEXT
+    conn.execute(
+        "INSERT INTO canned (trigger_text, answer) VALUES (?, ?)",
+        ("sid_helper: ask for SID at ticket intake (SPEC-01)", SID_HELPER_TEXT),
     )
     conn.commit()
 
