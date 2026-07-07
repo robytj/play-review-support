@@ -137,6 +137,18 @@ def _db():
         return _client[os.environ.get("MONGO_DB_NAME", "brx_main")]
 
 
+def _nickname_str(v) -> str:
+    """account.nickname is a dict in prod: {'local': 'QuenteCapitão', 'tag': '4497',
+    'value': 'QuenteCapitão4497'} (probe 2026-07-07). Prefer the unique 'value',
+    fall back to local+tag, tolerate plain strings."""
+    if isinstance(v, dict):
+        if v.get("value"):
+            return str(v["value"])
+        local, tag = v.get("local") or "", v.get("tag") or ""
+        return f"{local}{tag}" if local else ""
+    return str(v or "")
+
+
 def _to_dt(v) -> datetime | None:
     """createTime / purchasedTime tolerant parse: datetime, epoch seconds or millis."""
     if v is None:
@@ -295,7 +307,7 @@ def get_player_context(sid: str) -> PlayerContext | None:
     ctx = PlayerContext(
         sid=sid,
         user_id=acc.get("_id"),
-        nickname=str(acc.get("nickname") or ""),
+        nickname=_nickname_str(acc.get("nickname")),
         state=state,
         level=acc.get("level"),
         matches_played=matches,
