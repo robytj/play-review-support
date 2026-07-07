@@ -315,6 +315,19 @@ def _migrate(conn):
             escalations INTEGER DEFAULT 0
         );
 
+        -- SPEC-02 §3 -- public support site "Was this helpful?" votes
+        -- (templates/web helpful_vote -> POST /kb/article/<slug>/vote in
+        -- app/web_support.py). Anonymous by design: no session/IP stored, just
+        -- the vote + the UI language it was cast in, for per-article ratios.
+        CREATE TABLE IF NOT EXISTS kb_votes (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            article_id INTEGER NOT NULL REFERENCES kb_articles(id),
+            vote TEXT NOT NULL,             -- 'up' | 'down'
+            lang TEXT DEFAULT '',
+            created_at TEXT DEFAULT (datetime('now'))
+        );
+        CREATE INDEX IF NOT EXISTS idx_kb_votes_article ON kb_votes(article_id);
+
         -- SPEC-09 §1 -- the ticket audit log (mirrors the game admin's
         -- remarks+audit model). Every ticket mutation writes exactly one row via
         -- app/ticketing.add_event(); notes are events too (event='note', text in

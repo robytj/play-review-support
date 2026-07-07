@@ -87,3 +87,34 @@ script, in order:
 
 Support Settings → **chat_enabled** off → tab shows "chat switched off"; sessions return
 503. The Discord token / shadow-mode arrangement is untouched.
+
+## 7. Public support site sample (SPEC-02) — custom domain + preview
+
+The player-facing site (`app/web_support.py`, Claude Design package in
+`templates/web/` + `static/web/`) ships on this same Railway service. Rollout:
+
+1. **Preview first, before any DNS**: the full site is already live on the
+   service's default domain under the `/site` prefix —
+   `https://primebot.up.railway.app/site` (home, `/site/kb/<category>`,
+   `/site/kb/article/<slug>`, `/site/search?q=`, `/site/chat` demo,
+   `/site/ticket/<public_id>`). Root-absolute links inside pages are
+   307-redirected into `/site/...`, so click-through works end to end.
+   The component gallery is at `/site/dev/components?key=<SITE_DEV_KEY>`
+   (set the `SITE_DEV_KEY` env var first; unset = the page 404s).
+2. **Attach the custom domain**: Railway → the web service → **Settings →
+   Networking → Custom Domain** → add `support.primerush.gg`. Railway shows the
+   CNAME target; create that CNAME record at the DNS provider for the
+   `support` subdomain of `primerush.gg`. Wait for the domain to show
+   "Issued certificate".
+3. **Set the host env** (already the default, set it explicitly anyway):
+   `SUPPORT_SITE_HOST=support.primerush.gg`. Requests arriving with that Host
+   header are served the site at ROOT paths (`https://support.primerush.gg/`);
+   the API surface (`/api/dashboard/*`, `/chat`, `/health`) does not exist on
+   that domain. Every other host (the `primebot.up.railway.app` default)
+   keeps all existing API routes untouched at root plus the `/site` preview.
+4. **Sample-mode notes for the review round**: `/chat` is DEMO MODE (transcript
+   seeded from `static/web/fixtures/chat_demo.json`, labelled "PREVIEW — demo
+   transcript"; real chat API = SPEC-02 §5 + SPEC-03), `/ingame` renders the
+   invalid-token identity sheet only (JWT verify = SPEC-02 §4), article
+   translation serves the `kb_translations` cache only. KB pages, search,
+   helpful votes (`kb_votes` table) and `/ticket/<public_id>` run on live data.

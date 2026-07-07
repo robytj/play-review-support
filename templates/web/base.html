@@ -38,13 +38,16 @@
 <body>
   <a class="sr-only" href="#main">Skip to content</a>
 
-  {% block header %}{% include 'web/_components.html' %}{{ site_header() }}{% endblock %}
+  {# Jinja2 compat: {% include %} does not export macros, so the header/footer
+     macros must be imported (with context, for t()/lang/identity) -- the only
+     backend edit to the design package. #}
+  {% block header %}{% import 'web/_components.html' as c with context %}{{ c.site_header() }}{% endblock %}
 
   <main id="main">
     {% block body %}{% endblock %}
   </main>
 
-  {% block footer %}{{ site_footer() }}{% endblock %}
+  {% block footer %}{% import 'web/_components.html' as c with context %}{{ c.site_footer() }}{% endblock %}
 
   <div class="toast-layer" id="toast-layer" aria-live="polite" aria-atomic="true"></div>
 

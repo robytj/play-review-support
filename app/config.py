@@ -168,6 +168,14 @@ SECRET_KEY = os.environ.get("SECRET_KEY", "dev-only-not-secure")
 # disabled (503) if unset.
 SUPPORT_SERVICE_API_KEY = os.environ.get("SUPPORT_SERVICE_API_KEY", "")
 
+# SPEC-02 public support site (app/web_support.py). Requests whose Host matches
+# SUPPORT_SITE_HOST are served the player-facing site at root paths (Railway
+# custom domain on this same service); every other host gets the same site under
+# /site for pre-DNS preview. SITE_DEV_KEY gates the /dev/components gallery
+# (?key= must match; unset = gallery always 404s).
+SUPPORT_SITE_HOST = os.environ.get("SUPPORT_SITE_HOST", "support.primerush.gg")
+SITE_DEV_KEY = os.environ.get("SITE_DEV_KEY", "")
+
 DB_PATH = os.environ.get("DB_PATH", str(ROOT / "data" / "supportbot.db"))
 Path(DB_PATH).parent.mkdir(parents=True, exist_ok=True)
 
