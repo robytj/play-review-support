@@ -82,7 +82,48 @@ _TXN_PROJECTION = {
     "type": 1,
     "response": 1,
     "transactionId": 1,
+    "rewards": 1,   # what the purchase contained -> human description
 }
+
+# Friendly store names for player-facing summaries (raw values live in the DB:
+# Apple, Google, GoogleSubscription, XSollaWebshop, ...).
+_PAYMENT_LABELS = {
+    "apple": "Apple",
+    "google": "Google",
+    "googlesubscription": "Google",
+    "xsolla": "XSolla",
+    "xsollawebshop": "XSolla",
+}
+
+
+def _payment_label(s) -> str:
+    return _PAYMENT_LABELS.get(str(s).strip().lower(), str(s))
+
+
+# rewards[] inner keys are not probe-confirmed yet -- tolerant extraction, and
+# scripts/probe_player_context.py dumps one entry's shape to pin them down.
+_REWARD_NAME_KEYS = ("name", "itemName", "displayName", "title", "description",
+                     "rewardType", "type", "itemId", "id")
+_REWARD_QTY_KEYS = ("amount", "quantity", "count", "qty")
+
+
+def _txn_description(d: dict) -> str | None:
+    """Human description of what a purchase contained, from rewards[]. e.g.
+    '500× Gems + Elite Crate'. None when rewards carry nothing nameable."""
+    rewards = d.get("rewards") or []
+    parts = []
+    for r in rewards[:3]:
+        if not isinstance(r, dict):
+            continue
+        name = next((str(r[k]) for k in _REWARD_NAME_KEYS if r.get(k)), None)
+        qty = next((r[k] for k in _REWARD_QTY_KEYS
+                    if isinstance(r.get(k), (int, float)) and r[k] > 0), None)
+        if name:
+            parts.append(f"{int(qty)}× {name}" if qty and qty > 1 else name)
+    if not parts:
+        return None
+    extra = len(rewards) - 3
+    return " + ".join(parts) + (f" +{extra} more" if extra > 0 else "")
 _TXN_SCAN_LIMIT = 200   # newest N transactions considered for the summary
 _RECENT_TXNS = 5
 
@@ -251,20 +292,26 @@ def _txn_summary(db, user_id) -> dict | None:
         qty = d.get("orderQuantity")
         real.append({
             "date": dt.date().isoformat() if dt else None,
-            "payment_system": str(system),
+            "payment_system": _payment_label(system),
             "product": str(product) if product is not None else None,
+            "description": _txn_description(d),
             "status": str(status) if status is not None else None,
             "amount": (f"{amount:g} {currency}" if isinstance(amount, (int, float))
                        and currency else None),
             "qty": qty if isinstance(qty, int) and qty > 1 else None,
             "_dt": dt,
         })
-        systems.add(str(system))
+        systems.add(_payment_label(system))
     dts = [t["_dt"] for t in real if t["_dt"]]
     summary = {
         "real_money_count": len(real),
         "first_purchase": min(dts).date().isoformat() if dts else None,
         "last_purchase": max(dts).date().isoformat() if dts else None,
+        # NOTE (confirmed by John 2026-07-07): user.transaction stores COMPLETED
+        # purchases only — failed payments live in a separate system today and are
+        # planned to land in this DB in a future version. Until then: presence in
+        # this summary means the purchase went through server-side; absence of a
+        # charged purchase = escalate for manual verification.
         "payment_systems": sorted(systems),
         "recent": [{k: v for k, v in t.items() if k != "_dt"} for t in real[:_RECENT_TXNS]],
         "scanned": len(docs),

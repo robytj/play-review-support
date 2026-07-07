@@ -99,6 +99,17 @@ def main() -> int:
         if doc:
             for path, typ in sorted(_shape(doc).items()):
                 print(f"  {path:45s} {typ}")
+            # rewards[] inner shape -- needed to pin the purchase-description keys
+            # used by player_context._txn_description (name/qty candidates).
+            rewards = doc.get("rewards") or []
+            print("\n== rewards[0] inner shape (purchase description source) ==")
+            if rewards and isinstance(rewards[0], dict):
+                for path, typ in sorted(_shape(rewards[0]).items()):
+                    print(f"  {path:45s} {typ}")
+                desc = player_context._txn_description(doc)
+                print(f"  -> _txn_description() renders this doc as: {desc!r}")
+            else:
+                print("  (rewards empty or not dicts)")
         else:
             print("  (no transaction docs for the first resolved user)")
     print()

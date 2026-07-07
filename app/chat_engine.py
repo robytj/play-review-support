@@ -584,23 +584,31 @@ def _purchase_reply(session, meta: dict, ctx) -> list[dict]:
                 "If you were charged, it may be under a different account or store login "
                 "— happy to flag it for the team.")
     else:
-        lines = [f"Here's what I can see on your account ({ctx.sid}):",
-                 f"• {t['real_money_count']} real-money purchase(s) via "
+        # user.transaction records COMPLETED purchases only (failed payments are
+        # not written to Mongo today; they arrive from a separate system in a
+        # future version) — so frame the list as confirmed-delivered and route
+        # "charged but missing" to escalation.
+        lines = [f"Here's what I can see on your account ({ctx.sid}) — "
+                 f"these all completed successfully:",
+                 f"• {t['real_money_count']} purchase(s) via "
                  f"{', '.join(t['payment_systems']) or 'unknown store'}",
                  f"• First purchase {t['first_purchase']}, most recent {t['last_purchase']}"]
         recent = [r for r in t["recent"] if r.get("date")]
         if recent:
             lines.append("Most recent:")
             for r in recent:
-                product = _clip(r.get("product")) or "purchase"
+                what = _clip(r.get("description")) or _clip(r.get("product")) or "purchase"
                 if r.get("qty"):
-                    product = f"{product} ×{r['qty']}"
-                bits = [r["date"], product]
+                    what = f"{what} ×{r['qty']}"
+                bits = [r["date"], what]
                 if r.get("amount"):
                     bits.append(_clip(r.get("amount")))
-                if r.get("status"):
-                    bits.append(_clip(r.get("status"), 24))
+                if r.get("payment_system"):
+                    bits.append(_clip(r.get("payment_system"), 24))
                 lines.append("• " + " — ".join(str(b) for b in bits if b))
+        lines.append("If you were charged for something that isn't listed here, it "
+                     "didn't reach your account — tell me which purchase and I'll "
+                     "flag it for the team to verify and restore.")
         text = "\n".join(lines)
     msg = _add_msg(session["id"], "bot", "text", text,
                    {"intent": "purchases", "summary": {k: v for k, v in t.items()
