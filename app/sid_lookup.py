@@ -44,7 +44,13 @@ def _coll():
             _unavailable = True
             return None
         _client = MongoClient(MONGO_URI, serverSelectionTimeoutMS=5000)
-    return _client.get_default_database()[MONGO_ACCOUNT_COLLECTION]
+    # DB name: URI path if present, else MONGO_DB_NAME (Railway sets the name
+    # separately — the shared URI has no default database in its path).
+    try:
+        db = _client.get_default_database()
+    except Exception:
+        db = _client[os.environ.get("MONGO_DB_NAME", "brx_main")]
+    return db[MONGO_ACCOUNT_COLLECTION]
 
 
 def resolve_sid(email: str | None = None, claimed_sid: str | None = None) -> str | None:

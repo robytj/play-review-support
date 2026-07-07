@@ -129,7 +129,12 @@ def _db():
             _unavailable = True
             return None
         _client = MongoClient(MONGO_URI, serverSelectionTimeoutMS=5000)
-    return _client.get_default_database()
+    # DB name: URI path if present, else MONGO_DB_NAME (Railway sets the name
+    # separately — the shared URI has no default database in its path).
+    try:
+        return _client.get_default_database()
+    except Exception:
+        return _client[os.environ.get("MONGO_DB_NAME", "brx_main")]
 
 
 def _to_dt(v) -> datetime | None:
