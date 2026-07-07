@@ -1,35 +1,27 @@
-"""SID resolution pass (PROJECT_HANDOFF §4A #3 / §4B) -- SCAFFOLD.
+"""SID resolution pass (PROJECT_HANDOFF §4A #3) — resolves a player SID for tickets
+that lack one, by looking the ticket's sender email up in the brx_main Mongo `account`
+collection, then persisting the result onto `conversations.player_id` so the
+admin-panel link (https://admin.brx.indusgame.com/player/<SID>) lights up in the grid.
 
-Resolves a player SID for each ticket that lacks one, by looking the player's email
-(and/or Discord username) up in MongoDB, then persists the result onto
-`conversations.player_id` so it's queried ONCE (not per-render, not per-row) and the
-SID -> https://admin.brx.indusgame.com/player/<SID> link lights up in the grid.
+Confirmed schema (brx_main.account, 2026-07-06):
+  - player email       -> `email.id`      (INDEXED: email.id_1 — safe for $in)
+  - normalized email   -> `email.normalId` (lowercased; not indexed — used only for
+                          building the local match map, never queried directly)
+  - SID (admin panel)  -> `shortId`        (string; play_reviewer's PLAYER_ADMIN_URL
+                          is /player/{sid} where sid == shortId — NOT the numeric _id)
 
-Design (matches §4A #3's "must be efficient" requirement):
-  1. Collect every distinct email/username across conversations missing a player_id.
-  2. ONE bulk Mongo query ($in on the mapped field) -> in-memory {email: sid} map.
-  3. One UPDATE per resolved conversation. Re-runnable; only fills blanks.
+Efficiency (per the "direct/bounded queries only" rule): dedupes emails, then fires
+chunked `$in` queries on the indexed `email.id` (default 300/chunk). One UPDATE per
+resolved conversation. Re-runnable; only fills blanks. Discord tickets have no email
+(only a Discord display name), so they're skipped here.
 
-------------------------------------------------------------------------------
-BEFORE THIS RUNS, THREE THINGS MUST BE CONFIRMED (see PROJECT_HANDOFF §5) and wired
-into the env vars below. They were NOT available in the SupportBot repo -- the Mongo
-credentials live in the play-review-responder project's settings/variables, and the
-players collection + field mapping were never documented. Do NOT invent a SID format.
+Requires `pymongo` + `dnspython` and network — run on your machine, NOT the Claude
+sandbox (no egress there). After it runs, re-sync the DB to Railway with the safe
+VACUUM + WAL-clear procedure (BACKFILL_RUNBOOK §C.5).
 
-Required env (set them where you run this -- e.g. copy from play-review-responder):
-    MONGO_URI                 mongodb+srv://.../ connection string
-    MONGO_DB                  database name that holds players
-    MONGO_PLAYERS_COLLECTION  collection name (e.g. "players")
-    MONGO_EMAIL_FIELD         document field holding the player's email   (default: "email")
-    MONGO_SID_FIELD           document field holding the player's SID      (default: "sid")
-    MONGO_USERNAME_FIELD      (optional) field holding discord username, for Discord tickets
-
-Usage:
-    python -m scripts.resolve_sids --dry-run    # show what would resolve, no writes
-    python -m scripts.resolve_sids              # resolve + persist
-    python -m scripts.resolve_sids --limit 500  # cap the email set (metered runs)
-
-Requires `pymongo` (add to requirements.txt when you go live with this).
+    export MONGO_URI='mongodb+srv://...'      # do NOT commit this
+    python -m scripts.resolve_sids --dry-run  # show match rate, no writes
+    python -m scripts.resolve_sids            # resolve + persist
 """
 from __future__ import annotations
 
@@ -42,18 +34,28 @@ import sys
 from app import db
 
 MONGO_URI = os.environ.get("MONGO_URI", "")
-MONGO_DB = os.environ.get("MONGO_DB", "")
-MONGO_PLAYERS_COLLECTION = os.environ.get("MONGO_PLAYERS_COLLECTION", "players")
-MONGO_EMAIL_FIELD = os.environ.get("MONGO_EMAIL_FIELD", "email")
-MONGO_SID_FIELD = os.environ.get("MONGO_SID_FIELD", "sid")
-MONGO_USERNAME_FIELD = os.environ.get("MONGO_USERNAME_FIELD", "")
+MONGO_ACCOUNT_COLLECTION = os.environ.get("MONGO_ACCOUNT_COLLECTION", "account")
+MONGO_EMAIL_FIELD = os.environ.get("MONGO_EMAIL_FIELD", "email.id")
+MONGO_NORMAL_EMAIL_FIELD = os.environ.get("MONGO_NORMAL_EMAIL_FIELD", "email.normalId")
+MONGO_SID_FIELD = os.environ.get("MONGO_SID_FIELD", "shortId")
+CHUNK = int(os.environ.get("MONGO_IN_CHUNK", "300"))
 
 _EMAIL_RE = re.compile(r"[\w.+-]+@[\w-]+\.[\w.-]+")
 
 
+def _dig(doc: dict, dotted: str):
+    cur = doc
+    for part in dotted.split("."):
+        if isinstance(cur, dict) and part in cur:
+            cur = cur[part]
+        else:
+            return None
+    return cur
+
+
 def _email_for(conv: dict) -> str | None:
     """Best-effort player email for a conversation: context.from (email/freshdesk),
-    else the first email address found in the stored message text prefix."""
+    else the first email address in the stored first-message text ('[email] ...')."""
     try:
         ctx = json.loads(conv["context"] or "{}")
     except Exception:
@@ -76,40 +78,40 @@ def _load_targets(conn, limit: int):
     ).fetchall()
     targets = []
     for r in rows:
-        d = dict(r)
-        email = _email_for(d)
+        email = _email_for(dict(r))
         if email:
-            targets.append((d["id"], email))
+            targets.append((r["id"], email))
     if limit:
         targets = targets[:limit]
     return targets
 
 
 def _bulk_lookup(emails: list[str]) -> dict[str, str]:
-    """ONE Mongo query. Returns {email_lower: sid}. Replace/verify the field names
-    via the env vars above once the players collection schema is confirmed."""
+    """{email_lower: sid(shortId)} via chunked $in on the indexed email.id.
+    Keys the map on BOTH email.id and email.normalId (lowercased) so case/normalization
+    differences still match our lowercased ticket emails."""
     try:
         from pymongo import MongoClient
     except ImportError:
-        print("! pymongo not installed. `pip install pymongo` then re-run.", file=sys.stderr)
-        raise
-    if not (MONGO_URI and MONGO_DB):
-        raise SystemExit("! MONGO_URI / MONGO_DB unset -- see this file's header (PROJECT_HANDOFF §5).")
-    client = MongoClient(MONGO_URI)
-    coll = client[MONGO_DB][MONGO_PLAYERS_COLLECTION]
+        sys.exit("pip install pymongo dnspython, then re-run.")
+    if not MONGO_URI:
+        sys.exit("Set MONGO_URI env var first (the mongodb+srv://... string).")
+    cli = MongoClient(MONGO_URI, serverSelectionTimeoutMS=8000)
+    coll = cli.get_default_database()[MONGO_ACCOUNT_COLLECTION]
+    proj = {MONGO_EMAIL_FIELD: 1, MONGO_NORMAL_EMAIL_FIELD: 1, MONGO_SID_FIELD: 1}
     out: dict[str, str] = {}
-    # Case-insensitive match: emails are normalized to lower() on our side; if the
-    # collection stores mixed-case, add a case-insensitive index or a $regex $in.
-    cursor = coll.find(
-        {MONGO_EMAIL_FIELD: {"$in": emails}},
-        {MONGO_EMAIL_FIELD: 1, MONGO_SID_FIELD: 1},
-    )
-    for doc in cursor:
-        email = str(doc.get(MONGO_EMAIL_FIELD, "")).lower()
-        sid = doc.get(MONGO_SID_FIELD)
-        if email and sid is not None:
-            out[email] = str(sid)
-    client.close()
+    uniq = sorted(set(emails))
+    for i in range(0, len(uniq), CHUNK):
+        chunk = uniq[i:i + CHUNK]
+        for doc in coll.find({MONGO_EMAIL_FIELD: {"$in": chunk}}, proj):
+            sid = _dig(doc, MONGO_SID_FIELD)
+            if sid is None:
+                continue
+            for f in (MONGO_EMAIL_FIELD, MONGO_NORMAL_EMAIL_FIELD):
+                val = _dig(doc, f)
+                if isinstance(val, str) and val:
+                    out[val.lower()] = str(sid)
+    cli.close()
     return out
 
 
@@ -124,19 +126,25 @@ def main() -> int:
     targets = _load_targets(conn, args.limit)
     emails = sorted({e for _, e in targets})
     print(f"{len(targets)} tickets missing a SID, {len(emails)} distinct emails to look up.")
-
-    if args.dry_run:
-        print("--dry-run: not querying Mongo. Sample emails:", emails[:10])
+    if not emails:
         return 0
 
     sid_map = _bulk_lookup(emails)
-    print(f"Mongo returned {len(sid_map)} matches.")
+    resolved = [(cid, sid_map[e]) for cid, e in targets if e in sid_map]
+    print(f"Mongo matched {len(set(e for e in emails if e in sid_map))}/{len(emails)} emails "
+          f"-> {len(resolved)} tickets resolvable.")
 
-    updates = [(sid_map[e], cid) for cid, e in targets if e in sid_map]
-    conn.executemany("UPDATE conversations SET player_id = ? WHERE id = ?", updates)
+    if args.dry_run:
+        for cid, sid in resolved[:10]:
+            print(f"  conv {cid} -> shortId {sid}")
+        print("--dry-run: no writes.")
+        return 0
+
+    conn.executemany("UPDATE conversations SET player_id = ? WHERE id = ?",
+                     [(sid, cid) for cid, sid in resolved])
     conn.commit()
-    print(f"Persisted player_id on {len(updates)} conversations. "
-          f"{len(targets) - len(updates)} still unresolved (no Mongo match).")
+    print(f"Persisted player_id (shortId) on {len(resolved)} conversations. "
+          f"{len(targets) - len(resolved)} still unresolved (no email match).")
     return 0
 
 
