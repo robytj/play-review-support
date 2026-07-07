@@ -36,6 +36,22 @@ def _closed(exc: chat_engine.SessionClosed) -> JSONResponse:
                         content={"error": "session_ended", "state": exc.state})
 
 
+@router.get("/health", dependencies=[Depends(require_service_key)])
+def health():
+    """Shadow-testing diagnostics: is the game Mongo reachable from THIS deploy?
+    A dead Mongo otherwise masquerades as 'SID not found' in the chat."""
+    from app import player_context
+    mongo_ok = False
+    try:
+        db = player_context._db()
+        if db is not None:
+            db.client.admin.command("ping")
+            mongo_ok = True
+    except Exception:
+        mongo_ok = False
+    return {"chat_enabled": bool(config.CHAT_ENABLED), "mongo": mongo_ok}
+
+
 @router.post("/sessions", dependencies=[Depends(require_service_key)])
 def create_session():
     if not config.CHAT_ENABLED:
