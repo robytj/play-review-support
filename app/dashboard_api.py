@@ -675,6 +675,14 @@ def tone_refresh(payload: dict | None = None):
 
 # ----------------------------------------------------------------------- settings --
 
+@router.get("/diagnostics", dependencies=[Depends(require_service_key)])
+def get_diagnostics():
+    """Full System Test (SPEC-08 shadow readiness): SQLite/KB/scope gate/game Mongo/
+    player context, each step with sanitized error detail. Read-only."""
+    from app import diagnostics
+    return diagnostics.run_full_test()
+
+
 @router.get("/settings", dependencies=[Depends(require_service_key)])
 def get_settings():
     return config.get_thresholds_dict()
