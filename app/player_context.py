@@ -201,6 +201,33 @@ def _aggregate_stats(db, user_id) -> dict | None:
     return agg
 
 
+# Outcome words we recognise inside provider responses. Anything else is treated
+# as an opaque blob and NEVER surfaced (live 2026-07-07: `response` on Apple
+# purchases is the full signed JWS receipt incl. certificate chain — thousands
+# of chars of base64 that must not reach the chat).
+_STATUS_TOKEN_RE = re.compile(
+    r"\b(succe(?:ss|ssful|eded)|completed|failed|failure|declined|refunded|"
+    r"pending|cancel(?:led|ed)|expired)\b", re.I)
+_SHORT_VALUE_RE = re.compile(r"[\w .:-]{1,24}$")
+
+
+def _short_status(d: dict) -> str | None:
+    """Human-safe outcome for one transaction: a recognised token from
+    `response`/`type`, or a short clean value — never a raw blob."""
+    for cand in (d.get("response"), d.get("type")):
+        if cand is None:
+            continue
+        s = str(cand).strip()
+        if not s:
+            continue
+        m = _STATUS_TOKEN_RE.search(s[:2000])
+        if m:
+            return m.group(1).lower()
+        if _SHORT_VALUE_RE.fullmatch(s):
+            return s
+    return None
+
+
 def _txn_summary(db, user_id) -> dict | None:
     docs = list(
         db["user.transaction"]
@@ -216,9 +243,9 @@ def _txn_summary(db, user_id) -> dict | None:
             continue  # paymentSystem set = real money (SPEC-08 §6); unset = soft currency
         dt = _to_dt(d.get("purchasedTime"))
         # Probe-confirmed names: product = actualPrice.productId (fallback offerId);
-        # outcome lives in `response`; amount/currency from actualPrice.
+        # amount/currency from actualPrice. Outcome: see _short_status().
         product = _get_path(d, "actualPrice.productId") or d.get("offerId")
-        status = d.get("response") or d.get("type")
+        status = _short_status(d)
         amount = _get_path(d, "actualPrice.amount")
         currency = _get_path(d, "actualPrice.currency")
         qty = d.get("orderQuantity")

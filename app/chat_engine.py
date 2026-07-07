@@ -150,6 +150,17 @@ def _now() -> str:
     return row["t"]
 
 
+def _clip(v, n: int = 48) -> str | None:
+    """Blob guard for player-visible text built from data-source fields: one
+    line, hard length cap. Raw provider payloads (receipts, cert chains, JSON)
+    must never reach the transcript — summarize or drop (SPEC-08 §3, 'summaries
+    only')."""
+    if v is None:
+        return None
+    s = " ".join(str(v).split())
+    return s if len(s) <= n else s[: n - 1] + "…"
+
+
 def _add_msg(session_id: int, role: str, type_: str, content: str, meta: dict | None = None) -> dict:
     with db.tx() as c:
         cur = c.execute(
@@ -581,15 +592,15 @@ def _purchase_reply(session, meta: dict, ctx) -> list[dict]:
         if recent:
             lines.append("Most recent:")
             for r in recent:
-                product = r.get("product") or "purchase"
+                product = _clip(r.get("product")) or "purchase"
                 if r.get("qty"):
                     product = f"{product} ×{r['qty']}"
                 bits = [r["date"], product]
                 if r.get("amount"):
-                    bits.append(r["amount"])
+                    bits.append(_clip(r.get("amount")))
                 if r.get("status"):
-                    bits.append(r["status"])
-                lines.append("• " + " — ".join(str(b) for b in bits))
+                    bits.append(_clip(r.get("status"), 24))
+                lines.append("• " + " — ".join(str(b) for b in bits if b))
         text = "\n".join(lines)
     msg = _add_msg(session["id"], "bot", "text", text,
                    {"intent": "purchases", "summary": {k: v for k, v in t.items()
