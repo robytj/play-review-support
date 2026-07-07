@@ -45,6 +45,23 @@ def _apply(cfg: dict):
     # hot-reload rule as the thresholds below.
     g["DISCORD_SHADOW_MODE"] = bool(cfg.get("discord", {}).get("shadow_mode", False))
 
+    # Shadow chat agent (SPEC-08). Same hot-reload rule as shadow_mode above:
+    # chat_enabled is the kill switch the Support Settings tab flips live via
+    # write_settings() -> reload(); everything reads config.CHAT_ENABLED at call
+    # time, never a frozen import. .get() defaults keep an older config.yaml
+    # (without these blocks) booting fine.
+    chat_cfg = cfg.get("chat", {}) or {}
+    g["CHAT_ENABLED"] = bool(chat_cfg.get("enabled", False))
+    g["TAU_CLARIFY"] = float(chat_cfg.get("tau_clarify", 0.45))
+    budgets = cfg.get("chat_budgets", {}) or {}
+    g["CHAT_TIER2_PER_SESSION"] = int(budgets.get("tier2_per_session", 8))
+    g["CHAT_MESSAGES_PER_SESSION"] = int(budgets.get("messages_per_session", 30))
+    g["CHAT_DAILY_TIER2_CALLS"] = int(budgets.get("daily_tier2_calls", 300))
+    sg = cfg.get("scope_gate", {}) or {}
+    g["SCOPE_GATE_ENABLED"] = bool(sg.get("enabled", True))
+    g["SCOPE_GATE_MIN_SCORE"] = float(sg.get("min_score", 0.35))
+    g["SCOPE_GATE_STRIKE_LIMIT"] = int(sg.get("strike_limit", 3))
+
 
 def reload():
     """Re-reads config.yaml from disk and updates the live module globals.
@@ -63,10 +80,13 @@ def get_thresholds_dict() -> dict:
         "rag_top_k": RAG_TOP_K,
         "sensitive_keywords": SENSITIVE_KEYWORDS,
         "shadow_mode": DISCORD_SHADOW_MODE,
+        "chat_enabled": CHAT_ENABLED,
+        "tau_clarify": TAU_CLARIFY,
     }
 
 
-def write_settings(thresholds: dict = None, sensitive_keywords: list = None, shadow_mode: bool = None):
+def write_settings(thresholds: dict = None, sensitive_keywords: list = None, shadow_mode: bool = None,
+                   chat_enabled: bool = None):
     """Used by POST /api/dashboard/settings. Rewrites config.yaml (preserving
     everything else) then reload()s so it takes effect immediately."""
     cfg = _load_yaml()
@@ -76,6 +96,10 @@ def write_settings(thresholds: dict = None, sensitive_keywords: list = None, sha
         cfg["escalation"]["sensitive_keywords"] = sensitive_keywords
     if shadow_mode is not None:
         cfg.setdefault("discord", {})["shadow_mode"] = bool(shadow_mode)
+    if chat_enabled is not None:
+        # kill switch for the shadow chat agent (SPEC-08 §8) -- lives next to
+        # shadow_mode so the Support Settings tab flips it live, no redeploy.
+        cfg.setdefault("chat", {})["enabled"] = bool(chat_enabled)
     with open(CONFIG_YAML_PATH, "w") as f:
         yaml.safe_dump(cfg, f, sort_keys=False)
     return reload()

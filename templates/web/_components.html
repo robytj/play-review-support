@@ -1,0 +1,201 @@
+{# =============================================================================
+   templates/web/_components.html — shared Jinja macros (SPEC-02a §4).
+   Import at top of any page: {% import 'web/_components.html' as c with context %}
+   base.html also includes this file so site_header()/site_footer() are in scope.
+============================================================================= #}
+{% import 'web/_icons.html' as ic %}
+{% import 'web/_logo.html' as lg %}
+
+{# ---- 4.1 Header : logo · language picker · identity chip -------------------- #}
+{% macro site_header(variant='') %}
+<header class="site-header {{ 'site-header--chat' if variant=='chat' else '' }}">
+  <div class="site-header__inner">
+    {{ lg.logo_lockup('/', t('brand.support')) }}
+    <div class="header-tools">
+      {{ lang_picker() }}
+      {{ identity_chip() }}
+    </div>
+  </div>
+</header>
+{% endmacro %}
+
+{% macro lang_picker() %}
+<button class="lang" type="button" aria-haspopup="listbox" aria-label="Language: {{ lang|upper }}"
+        data-lang-picker>
+  {{ ic.icon('globe', 15) }}
+  <span dir="ltr">{{ {'en':'EN','pt-BR':'PT','es':'ES','ar':'AR'}[lang] | default('EN') }}</span>
+</button>
+{% endmacro %}
+
+{% macro identity_chip() %}
+{% if identity and not identity.is_guest %}
+  <button class="chip-id" type="button" data-open-identity aria-label="Player {{ identity.masked_sid }} — edit">
+    <span>{{ ic.icon('check', 12, 'chip-id__check') }}</span>
+    <span dir="ltr">{{ identity.masked_sid }}</span>
+  </button>
+{% else %}
+  <button class="chip-id chip-id--guest" type="button" data-open-identity>
+    <span dir="ltr">{{ t('chip.add_sid') }}</span>
+  </button>
+{% endif %}
+{% endmacro %}
+
+{# ---- 4.2 Search bar : GET /search, works with no JS ------------------------ #}
+{% macro search_bar(value='') %}
+<form class="search" action="/search" method="get" role="search">
+  {{ ic.icon('search', 18) }}
+  <label class="sr-only" for="q">{{ t('search.placeholder') }}</label>
+  <input id="q" name="q" type="search" inputmode="search" autocomplete="off"
+         value="{{ value }}" placeholder="{{ t('search.placeholder') }}">
+  <button type="submit" aria-label="{{ t('search.submit') }}">{{ ic.icon('arrow', 18) }}</button>
+</form>
+{% endmacro %}
+
+{# ---- 4.3 Category tile (full-width row) ------------------------------------ #}
+{% macro category_row(cat) %}
+<a class="row" href="/kb/{{ cat.slug }}">
+  <span class="row__icon">{{ ic.icon(cat.icon, 24) }}</span>
+  <span class="row__body">
+    <span class="row__title">{{ t('cat.' ~ cat.slug) }}</span>
+    <span class="row__meta">{{ t('count.articles', n=cat.count) }}</span>
+  </span>
+  {{ ic.icon('chevron', 16, 'row__chev') }}
+</a>
+{% endmacro %}
+
+{# ---- 4.4 Article row ------------------------------------------------------- #}
+{% macro article_row(art) %}
+<a class="row" href="/kb/article/{{ art.slug }}">
+  <span class="row__body">
+    <span class="row__title row__title--article">{{ art.title }}</span>
+    {% if art.snippet %}<span class="row__snippet">{{ art.snippet }}</span>{% endif %}
+  </span>
+  {{ ic.icon('chevron', 16, 'row__chev') }}
+</a>
+{% endmacro %}
+
+{# ---- 4.5 CTA banner : chat, or email fallback when chat disabled ----------- #}
+{% macro chat_cta() %}
+<div class="cta section">
+  <div>
+    <div class="cta__title">{{ t('cta.title') }}</div>
+    {% if web_chat_enabled %}
+      <div class="cta__sub">{{ t('cta.sub') }}</div>
+    {% else %}
+      <div class="cta__sub">{{ t('cta.email_note') }}</div>
+    {% endif %}
+  </div>
+  {% if web_chat_enabled %}
+    <a class="btn" href="/chat">{{ ic.icon('chat', 16) }}{{ t('cta.chat') }}</a>
+  {% else %}
+    <a class="btn" href="mailto:support@primerush.gg">{{ ic.icon('mail', 16) }}{{ t('cta.email') }}</a>
+  {% endif %}
+</div>
+{% endmacro %}
+
+{# ---- 4.6 Helpful vote (progressive-enhance; POSTs w/o JS via form) --------- #}
+{% macro helpful_vote(slug) %}
+<div class="vote section hairline-top" style="padding-block-start:24px" data-vote data-slug="{{ slug }}">
+  <span class="vote__label" data-vote-label>{{ t('vote.q') }}</span>
+  <form class="vote__btns" action="/kb/article/{{ slug }}/vote" method="post" data-vote-form>
+    <button class="vote__btn" name="v" value="up" type="submit" aria-label="Yes, helpful">{{ ic.icon('thumb-up', 18) }}</button>
+    <button class="vote__btn" name="v" value="down" type="submit" aria-label="No, not helpful">{{ ic.icon('thumb-down', 18) }}</button>
+  </form>
+</div>
+{% endmacro %}
+
+{# ---- 4.7 Ticket status pill ------------------------------------------------ #}
+{% macro status_pill(status) %}
+<span class="pill pill--{{ status }}">
+  <span class="pill__dot"></span>
+  <span dir="ltr">{{ t('ticket.status.' ~ status) }}</span>
+</span>
+{% endmacro %}
+
+{# ---- 4.8 Breadcrumb -------------------------------------------------------- #}
+{% macro breadcrumb(trail) %}
+<nav class="crumb eyebrow" aria-label="Breadcrumb">
+  {% for item in trail %}
+    {% if item.href and not loop.last %}<a href="{{ item.href }}">{{ item.label }}</a><span>/</span>
+    {% else %}<span aria-current="page" style="color:var(--white)">{{ item.label }}</span>{% endif %}
+  {% endfor %}
+</nav>
+{% endmacro %}
+
+{# ---- 4.9 Footer ------------------------------------------------------------ #}
+{% macro site_footer() %}
+<footer class="site-footer">
+  <div class="site-footer__links">
+    <a href="/legal/privacy">{{ t('footer.privacy') }}</a>
+    <a href="/legal/terms">{{ t('footer.terms') }}</a>
+    <a href="https://store.primerush.gg" rel="noopener">{{ t('footer.store') }}</a>
+    {{ lang_picker() }}
+  </div>
+  <div class="site-footer__copy eyebrow">{{ t('footer.copy') }}</div>
+</footer>
+{% endmacro %}
+
+{# ---- 6. Identity sheet (guest → identified) -------------------------------- #}
+{% macro identity_sheet(headline_key='identity.headline', prefill_sid='', open=False) %}
+<div class="sheet-scrim {{ '' if open else 'hidden' }}" id="identity-sheet" data-identity-scrim
+     role="dialog" aria-modal="true" aria-labelledby="identity-title" {{ '' if open else 'hidden' }}>
+  <div class="sheet">
+    <div class="sheet__head">
+      <h2 class="h2" id="identity-title">{{ t(headline_key) }}</h2>
+      <button class="sheet__close" type="button" data-close-identity aria-label="Close">{{ ic.icon('close', 18) }}</button>
+    </div>
+
+    <form class="stack" style="--gap:18px;margin-block-start:24px" action="/identity/link" method="post" data-identity-form>
+      <label class="field">
+        <span class="field__label" dir="ltr">{{ t('identity.sid_label') }}</span>
+        <input class="field__input field__input--sid" name="sid" dir="ltr"
+               autocomplete="off" autocapitalize="characters" spellcheck="false"
+               placeholder="{{ t('identity.sid_placeholder') }}" value="{{ prefill_sid }}"
+               aria-describedby="sid-err">
+        <span class="field__error hidden" id="sid-err" data-sid-err></span>
+      </label>
+
+      <div class="eyebrow" style="text-align:center">{{ t('identity.or') }}</div>
+
+      <label class="field">
+        <span class="field__label" dir="ltr">{{ t('identity.email_label') }}</span>
+        <input class="field__input" name="email" type="email" inputmode="email"
+               autocomplete="email" placeholder="you@example.com">
+      </label>
+
+      <button class="btn btn--block" type="submit">{{ t('identity.continue') }}</button>
+      <button class="link-muted" type="button" data-skip-identity style="align-self:center">{{ t('identity.skip') }}</button>
+    </form>
+
+    {# "Where's my SID?" — collapsed disclosure #}
+    <details class="disclose" style="margin-block-start:24px">
+      <summary class="disclose__row">
+        <span>{{ t('identity.wheres_sid') }}</span>
+        {{ ic.icon('chevron-down', 16) }}
+      </summary>
+      <div class="disclose__body">
+        <div class="illus illus--sm" role="img" aria-label="Prime Rush Settings → Profile screen">
+          {# TODO(design): swap for game Settings → Profile screenshot #}
+          SETTINGS · PROFILE SCREENSHOT
+        </div>
+        <ol style="margin-block-start:16px">
+          <li>{{ t('identity.step1') }}</li>
+          <li>{{ t('identity.step2') }}</li>
+          <li>{{ t('identity.step3') }}</li>
+        </ol>
+      </div>
+    </details>
+  </div>
+</div>
+{% endmacro %}
+
+{# ---- 5.4 empty state ------------------------------------------------------- #}
+{% macro empty_state(icon_name, title, sub) %}
+<div class="empty">
+  <div class="illus" style="max-width:220px;aspect-ratio:1;margin-inline:auto;border:none;background:none">
+    {{ ic.icon(icon_name, 96) }}
+  </div>
+  <div class="empty__title">{{ title }}</div>
+  <div class="empty__sub">{{ sub }}</div>
+</div>
+{% endmacro %}

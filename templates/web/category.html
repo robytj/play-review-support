@@ -1,0 +1,28 @@
+{# =============================================================================
+   templates/web/category.html — 5.2 /kb/<category>
+   Context: category {slug} · articles[] {slug, title, snippet}
+============================================================================= #}
+{% extends 'web/base.html' %}
+{% import 'web/_components.html' as c with context %}
+{% block title %}{{ t('cat.' ~ category.slug) }} · Prime Rush Support{% endblock %}
+
+{% block body %}
+<div class="page">
+  {{ c.breadcrumb([
+      {'label': 'HELP', 'href': '/'},
+      {'label': t('cat.' ~ category.slug)|upper}
+  ]) }}
+  <h1 class="h2" style="margin-block:14px 20px">{{ t('cat.' ~ category.slug) }}</h1>
+
+  <div class="rows">
+    {% for art in articles %}{{ c.article_row(art) }}{% endfor %}
+  </div>
+
+  {{ c.chat_cta() }}
+</div>
+{{ c.identity_sheet() }}
+{% endblock %}
+
+{% block scripts %}
+<script src="{{ url_for('static', filename='web/support.js') }}" defer></script>
+{% endblock %}

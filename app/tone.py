@@ -35,6 +35,9 @@ def _clip(text: str, n: int) -> str:
 
 
 def _select(conn, n_pairs: int, m_staff: int):
+    # source != 'chat': shadow chat sessions (SPEC-08 §5/§8) are test traffic --
+    # their escalated suggestions (and any edits reviewers make to them) must never
+    # train the voice. Explicit guard in code, not convention.
     pairs = conn.execute(
         """
         SELECT suggested_answer, edited_answer
@@ -42,6 +45,7 @@ def _select(conn, n_pairs: int, m_staff: int):
         WHERE edited_answer IS NOT NULL
           AND TRIM(edited_answer) != ''
           AND edited_answer != suggested_answer
+          AND source != 'chat'
         ORDER BY id DESC
         LIMIT ?
         """,
@@ -55,6 +59,7 @@ def _select(conn, n_pairs: int, m_staff: int):
         SELECT staff_answer FROM suggestions
         WHERE staff_answer IS NOT NULL
           AND LENGTH(staff_answer) BETWEEN 40 AND 600
+          AND source != 'chat'
         GROUP BY staff_answer
         ORDER BY MAX(id) DESC
         LIMIT ?

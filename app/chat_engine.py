@@ -1,0 +1,790 @@
+"""Shadow chat agent state machine (SPEC-08 §2-§3).
+
+GREET -> ASK_GAME -> ASK_SID -> CONFIRM_NAME -> RECOGNITION -> ISSUE_LOOP ->
+(RESOLVED | ESCALATED | EXPIRED | ENDED)
+
+Every scripted phase is a deterministic template; the only LLM calls are (a) ONE
+Haiku call to phrase the recognition line (template fallback on failure), (b) the
+Tier-2 RAG call inside router.suggest() -- reused pure, never forked -- and (c) the
+Haiku vision SID extraction for uploaded screenshots. Shadow semantics: sessions
+persist in chat_sessions/chat_messages (shadow=1) and NOTHING here touches
+metrics_daily (no bump_metric call in this module), the tone corpus (guarded in
+app/tone.py), messages/answer_cache via the live answer() path, or the public
+/chat endpoint.
+
+All Mongo reads go through app/player_context.py keyed to the session's ONE
+resolved SID -- the cross-player guard below is a refusal backstop on top of that
+structural guarantee, not the guarantee itself.
+"""
+from __future__ import annotations
+
+import json
+import re
+import secrets
+from datetime import date
+
+from app import config, db, embeddings, llm, player_context, router, scope_gate, vectorstore
+
+# ------------------------------------------------------------------- constants --
+
+TERMINAL_STATES = {"RESOLVED", "ESCALATED", "EXPIRED", "ENDED"}
+IDLE_LIMIT_MINUTES = 10          # SPEC-08 §2: idle 10 min -> auto-close (lazy, server-side)
+MAX_SID_TEXT_ATTEMPTS = 3
+MAX_IMAGE_ATTEMPTS = 2
+
+GAME_CHIPS = ["PrimeRush.gg (LatAm)", "PrimeRushGame (Global)", "Prime Rush MENA"]
+
+GREETING = ("Hey! Welcome to PrimeRush support — I'm the PrimeRush support bot. "
+            "Which game are you playing?")
+NON_LATAM_NOTE = ("Heads up — this test build supports PrimeRush.gg (LatAm), "
+                  "but I'll do my best to help!")
+ASK_SID_TEXT = ("Could you share your player SID? It's the 8-character code on your "
+                "profile page (letters and numbers, e.g. AB12CD3E).")
+SID_RETRY_TEXT = ("Hmm, I couldn't find an account with that SID. Double-check your "
+                  "profile page and try again?")
+SID_IMAGE_OFFER = ("Still no luck — if it's easier, upload a screenshot of your "
+                   "profile or settings screen and I'll read the SID from it.")
+DEGRADED_NOTE = ("I couldn't verify your account, so I'll answer from our help articles "
+                 "only — no account-specific details. A human can verify you later "
+                 "if needed.")
+ISSUE_PROMPT = "What can I help you with today?"
+CONFIRM_RETRY = "Just to be sure — is that your account? A quick Yes or No works."
+NAME_NO_TEXT = "I couldn't find you — can you share your SID again?"
+CROSS_SID_REFUSAL = ("I can only help with the account we verified in this chat — "
+                     "I can't look up or discuss any other player's account.")
+SMALLTALK_REPLY = ("Happy to chat! I'm best at PrimeRush support questions though — "
+                   "what can I help you with?")
+OOS_DEFLECTION = ("I can only help with PrimeRush support — your account, purchases, "
+                  "gameplay issues, that kind of thing. What's going on with your game?")
+ABUSE_DEFLECTION = ("I get that this is frustrating — I'm here to help with your "
+                    "PrimeRush issue, so let's keep it civil. What's going on?")
+STRIKES_GOODBYE = ("This doesn't seem to be about PrimeRush support, so I'll close this "
+                   "chat here. Start a New Chat anytime you have a game issue!")
+CSAT_QUESTION = "Did this solve it?"
+RESOLVED_GOODBYE = ("Awesome — glad that sorted it! Come back anytime, and have fun "
+                    "out there \U0001F3AE")
+ESCALATE_OFFER = "Sorry that didn't do it. Want me to raise this with the team as a ticket?"
+ESCALATE_DECLINED = "No problem — what else can I help you with?"
+GOODBYE = "Thanks for stopping by — start a New Chat anytime!"
+TIMEOUT_GOODBYE = ("Looks like you stepped away, so I'm closing this chat for now — "
+                   "start a New Chat anytime!")
+
+# SID-shaped token (SPEC-08 §3.2). Scans the raw text (uppercase only) so ordinary
+# lowercase words like "download" can't false-positive; players paste SIDs as-is.
+SID_TOKEN_RE = re.compile(r"\b[A-Z0-9]{8}\b")
+
+_PURCHASE_RE = re.compile(
+    r"\b(purchase[sd]?|payment|paid|pay|bought|buy|charge[ds]?|charged|refund|"
+    r"transaction|receipt|billing|invoice|gems?|coins?|diamonds?|top.?up|order)\b",
+    re.IGNORECASE,
+)
+_BAN_RE = re.compile(
+    r"\b(ban(ned)?|unban|suspend(ed)?|locked|appeal|restriction|muted|chat.?ban)\b",
+    re.IGNORECASE,
+)
+
+_YES = {"yes", "y", "yep", "yeah", "yes please", "sure", "ok", "okay", "correct",
+        "that's me", "thats me", "sim", "si", "sí"}
+_NO = {"no", "n", "nope", "nah", "não", "nao", "not me", "wrong", "no thanks",
+       "no thank you"}
+
+_BASE32 = "ABCDEFGHIJKLMNOPQRSTUVWXYZ234567"
+
+
+# ------------------------------------------------------------------ primitives --
+
+class SessionNotFound(Exception):
+    pass
+
+
+class SessionClosed(Exception):
+    """Raised when a message hits an already-terminal session (API -> 409)."""
+    def __init__(self, state: str):
+        self.state = state
+        super().__init__(state)
+
+
+def _is_yes(text: str) -> bool:
+    return (text or "").strip().lower().rstrip("!.") in _YES
+
+
+def _is_no(text: str) -> bool:
+    return (text or "").strip().lower().rstrip("!.") in _NO
+
+
+def _get(session_id: int):
+    row = db.get_conn().execute(
+        "SELECT * FROM chat_sessions WHERE id = ?", (session_id,)
+    ).fetchone()
+    if not row:
+        raise SessionNotFound(session_id)
+    return row
+
+
+def _meta(session) -> dict:
+    try:
+        return json.loads(session["meta_json"] or "{}")
+    except (ValueError, TypeError):
+        return {}
+
+
+def _save_meta(session_id: int, meta: dict):
+    with db.tx() as c:
+        c.execute("UPDATE chat_sessions SET meta_json = ? WHERE id = ?",
+                  (json.dumps(meta), session_id))
+
+
+def _update(session_id: int, **fields):
+    sets = ", ".join(f"{k} = ?" for k in fields)
+    with db.tx() as c:
+        c.execute(f"UPDATE chat_sessions SET {sets} WHERE id = ?",
+                  (*fields.values(), session_id))
+
+
+def _touch(session_id: int):
+    _update(session_id, last_activity_at=_now())
+
+
+def _now() -> str:
+    row = db.get_conn().execute("SELECT datetime('now') AS t").fetchone()
+    return row["t"]
+
+
+def _add_msg(session_id: int, role: str, type_: str, content: str, meta: dict | None = None) -> dict:
+    with db.tx() as c:
+        cur = c.execute(
+            "INSERT INTO chat_messages (session_id, role, type, content, meta_json) "
+            "VALUES (?, ?, ?, ?, ?)",
+            (session_id, role, type_, content, json.dumps(meta or {})),
+        )
+        mid = cur.lastrowid
+    row = db.get_conn().execute("SELECT * FROM chat_messages WHERE id = ?", (mid,)).fetchone()
+    return _msg_dict(row)
+
+
+def _msg_dict(row) -> dict:
+    try:
+        meta = json.loads(row["meta_json"] or "{}")
+    except (ValueError, TypeError):
+        meta = {}
+    return {"id": row["id"], "role": row["role"], "type": row["type"],
+            "content": row["content"], "meta": meta, "created_at": row["created_at"]}
+
+
+def budget_dict(session) -> dict:
+    return {
+        "tier2_used": session["tier2_used"],
+        "tier2_limit": config.CHAT_TIER2_PER_SESSION,
+        "messages_used": session["msg_count"],
+        "messages_limit": config.CHAT_MESSAGES_PER_SESSION,
+    }
+
+
+def _result(session_id: int, msgs: list[dict]) -> dict:
+    session = _get(session_id)
+    return {"session_id": session_id, "state": session["state"],
+            "messages": msgs, "budget": budget_dict(session)}
+
+
+def _bump_usage(field: str, delta: int = 1):
+    today = date.today().isoformat()
+    with db.tx() as c:
+        c.execute(
+            f"INSERT INTO chat_usage (day, {field}) VALUES (?, ?) "
+            f"ON CONFLICT(day) DO UPDATE SET {field} = {field} + excluded.{field}",
+            (today, delta),
+        )
+
+
+def _daily_tier2_calls() -> int:
+    row = db.get_conn().execute(
+        "SELECT tier2_calls FROM chat_usage WHERE day = ?", (date.today().isoformat(),)
+    ).fetchone()
+    return row["tier2_calls"] if row else 0
+
+
+# ------------------------------------------------------------------ idle expiry --
+
+def _expire_if_idle(session) -> tuple[object, list[dict]]:
+    """Lazy timeout (SPEC-08 §2): if a live session has been idle > 10 min, close it
+    now with a goodbye. Returns (fresh session row, goodbye messages added)."""
+    if session["state"] in TERMINAL_STATES:
+        return session, []
+    stale = db.get_conn().execute(
+        "SELECT 1 FROM chat_sessions WHERE id = ? "
+        "AND last_activity_at < datetime('now', ?)",
+        (session["id"], f"-{IDLE_LIMIT_MINUTES} minutes"),
+    ).fetchone()
+    if not stale:
+        return session, []
+    _update(session["id"], state="EXPIRED", ended_at=_now(), end_reason="timeout")
+    msg = _add_msg(session["id"], "bot", "text", TIMEOUT_GOODBYE)
+    return _get(session["id"]), [msg]
+
+
+def sweep_expired():
+    """Bulk lazy expiry used by the session list (SPEC-08 §2 'list sweeps'). State
+    flip only -- the per-session goodbye is added when that session is next opened."""
+    with db.tx() as c:
+        c.execute(
+            "UPDATE chat_sessions SET state='EXPIRED', ended_at=datetime('now'), "
+            "end_reason='timeout' WHERE state NOT IN ('RESOLVED','ESCALATED','EXPIRED','ENDED') "
+            "AND last_activity_at < datetime('now', ?)",
+            (f"-{IDLE_LIMIT_MINUTES} minutes",),
+        )
+
+
+# ------------------------------------------------------------------- lifecycle --
+
+def create_session() -> dict:
+    """New session; bot speaks first (GREET) and asks which game (ASK_GAME)."""
+    with db.tx() as c:
+        cur = c.execute("INSERT INTO chat_sessions (state) VALUES ('ASK_GAME')")
+        session_id = cur.lastrowid
+    _bump_usage("sessions")
+    greeting = _add_msg(session_id, "bot", "chips", GREETING, {"chips": GAME_CHIPS})
+    return _result(session_id, [greeting])
+
+
+def end_session(session_id: int, reason: str = "manual") -> dict:
+    session = _get(session_id)
+    if session["state"] in TERMINAL_STATES:
+        return _result(session_id, [])
+    state = "EXPIRED" if reason == "timeout" else "ENDED"
+    _update(session_id, state=state, ended_at=_now(), end_reason=reason)
+    goodbye = _add_msg(session_id, "bot", "text",
+                       TIMEOUT_GOODBYE if reason == "timeout" else GOODBYE)
+    return _result(session_id, [goodbye])
+
+
+def get_session(session_id: int) -> dict:
+    session = _get(session_id)
+    session, extra = _expire_if_idle(session)
+    rows = db.get_conn().execute(
+        "SELECT * FROM chat_messages WHERE session_id = ? ORDER BY id ASC", (session_id,)
+    ).fetchall()
+    s = dict(session)
+    s.pop("meta_json", None)  # internal runtime flags, not part of the API surface
+    s["budget"] = budget_dict(session)
+    return {"session": s, "messages": [_msg_dict(r) for r in rows]}
+
+
+def list_sessions(limit: int = 50, offset: int = 0) -> dict:
+    sweep_expired()
+    conn = db.get_conn()
+    rows = conn.execute(
+        "SELECT id, created_at, last_activity_at, state, game_choice, sid, player_name, "
+        "msg_count, tier2_used, strikes, escalated_conversation_id, ended_at, end_reason "
+        "FROM chat_sessions ORDER BY id DESC LIMIT ? OFFSET ?",
+        (limit, offset),
+    ).fetchall()
+    total = conn.execute("SELECT COUNT(*) AS n FROM chat_sessions").fetchone()["n"]
+    return {"sessions": [dict(r) for r in rows], "total": total}
+
+
+# ------------------------------------------------------------- message handling --
+
+def handle_message(session_id: int, text: str) -> dict:
+    session = _get(session_id)
+    if session["state"] in TERMINAL_STATES:
+        raise SessionClosed(session["state"])
+    session, expiry_msgs = _expire_if_idle(session)
+    if expiry_msgs:
+        return _result(session_id, expiry_msgs)
+
+    text = (text or "").strip()
+    user_msg = _add_msg(session_id, "user", "text", text)
+    _update(session_id, msg_count=session["msg_count"] + 1, last_activity_at=_now())
+    session = _get(session_id)
+
+    state = session["state"]
+    if state == "ASK_GAME":
+        out = _handle_game_choice(session, text)
+    elif state == "ASK_SID":
+        out = _handle_sid_text(session, text)
+    elif state == "CONFIRM_NAME":
+        out = _handle_confirm_name(session, text)
+    else:  # ISSUE_LOOP
+        out = _issue_loop(session, text)
+    return _result(session_id, [user_msg] + out)
+
+
+def handle_image(session_id: int, image_b64: str, media_type: str) -> dict:
+    """SID extraction from a screenshot (SPEC-08 §2.2) -- only meaningful while
+    identifying the account; max 2 images/session."""
+    session = _get(session_id)
+    if session["state"] in TERMINAL_STATES:
+        raise SessionClosed(session["state"])
+    session, expiry_msgs = _expire_if_idle(session)
+    if expiry_msgs:
+        return _result(session_id, expiry_msgs)
+    if session["state"] != "ASK_SID":
+        raise ValueError("images are only accepted while identifying your account")
+
+    user_msg = _add_msg(session_id, "user", "text", "[screenshot uploaded]", {"image": True})
+    _update(session_id, msg_count=session["msg_count"] + 1, last_activity_at=_now())
+    session = _get(session_id)
+
+    if session["image_attempts"] >= MAX_IMAGE_ATTEMPTS:
+        out = _enter_degraded(session)
+        return _result(session_id, [user_msg] + out)
+
+    _update(session_id, image_attempts=session["image_attempts"] + 1)
+    session = _get(session_id)
+
+    sid = None
+    try:
+        sid = llm.extract_sid_from_image(image_b64, media_type)
+    except Exception as e:
+        print(f"[warn] chat: vision SID extraction failed ({e!r})")
+
+    ctx = player_context.get_player_context(sid) if sid else None
+    if ctx:
+        out = _found_player(session, ctx)
+    elif session["image_attempts"] >= MAX_IMAGE_ATTEMPTS:
+        out = [_add_msg(session_id, "bot", "text",
+                        "I couldn't read a player ID from that one either.")]
+        out += _enter_degraded(_get(session_id))
+    else:
+        out = [_add_msg(session_id, "bot", "text",
+                        "I couldn't match a player ID from that screenshot — try a "
+                        "clearer shot of your profile page, or type the SID if you can.")]
+    return _result(session_id, [user_msg] + out)
+
+
+# --------------------------------------------------------------- scripted phases --
+
+def _handle_game_choice(session, text: str) -> list[dict]:
+    # Choice is conversational only; stored on the session (SPEC-08 §2.1).
+    _update(session["id"], game_choice=text[:60], state="ASK_SID")
+    out = []
+    if re.search(r"\b(global|mena)\b", text, re.IGNORECASE):
+        out.append(_add_msg(session["id"], "bot", "text", NON_LATAM_NOTE))
+    out.append(_add_msg(session["id"], "bot", "text", ASK_SID_TEXT))
+    return out
+
+
+def _extract_sid_token(text: str) -> str | None:
+    # Players paste SIDs in any case during intake -- uppercase before matching
+    # (unlike the ISSUE_LOOP guard, there's no false-positive risk here: whatever
+    # matches is validated against Mongo before it's trusted).
+    m = SID_TOKEN_RE.search((text or "").upper())
+    return m.group(0) if m else None
+
+
+def _handle_sid_text(session, text: str) -> list[dict]:
+    token = _extract_sid_token(text)
+    ctx = player_context.get_player_context(token) if token else None
+    if ctx:
+        return _found_player(session, ctx)
+
+    attempts = session["sid_attempts"] + 1
+    _update(session["id"], sid_attempts=attempts)
+    session = _get(session["id"])
+    if attempts < MAX_SID_TEXT_ATTEMPTS:
+        return [_add_msg(session["id"], "bot", "text", SID_RETRY_TEXT)]
+    if attempts == MAX_SID_TEXT_ATTEMPTS:
+        return [_add_msg(session["id"], "bot", "text", SID_IMAGE_OFFER,
+                         {"offer_image": True})]
+    return _enter_degraded(session)
+
+
+def _found_player(session, ctx) -> list[dict]:
+    _update(session["id"], sid=ctx.sid, player_name=ctx.nickname,
+            mongo_user_id=str(ctx.user_id) if ctx.user_id is not None else None,
+            state="CONFIRM_NAME")
+    card = _add_msg(session["id"], "bot", "context_card",
+                    f"Found it — {ctx.nickname} ({ctx.sid})",
+                    {"nickname": ctx.nickname, "sid": ctx.sid,
+                     "email_masked": ctx.email_masked})
+    confirm = _add_msg(session["id"], "bot", "chips",
+                       f"You're {ctx.nickname}, right?", {"chips": ["Yes", "No"]})
+    return [card, confirm]
+
+
+def _handle_confirm_name(session, text: str) -> list[dict]:
+    if _is_yes(text):
+        return _recognition(session)
+    if _is_no(text):
+        # attempts counter deliberately continues (SPEC-08 §2.3)
+        _update(session["id"], sid=None, player_name=None, mongo_user_id=None,
+                state="ASK_SID")
+        return [_add_msg(session["id"], "bot", "text", NAME_NO_TEXT)]
+    return [_add_msg(session["id"], "bot", "chips", CONFIRM_RETRY,
+                     {"chips": ["Yes", "No"]})]
+
+
+def _pick_highlight(stats: dict | None) -> str | None:
+    """Deterministic highlight priority (SPEC-08 §2.4):
+    matchMvpCount > longestKillStreak > totalWins > totalTimeSpent."""
+    s = stats or {}
+    v = s.get("matchMvpCount") or 0
+    if v > 0:
+        return f"{v:,} match MVP awards"
+    v = s.get("longestKillStreak") or 0
+    if v > 0:
+        return f"a longest kill streak of {v:,}"
+    v = s.get("totalWins") or 0
+    if v > 0:
+        return f"{v:,} total wins"
+    v = s.get("totalTimeSpent") or 0
+    if v > 0:
+        hours = int(v // 3600)
+        return f"about {hours:,} hours in the arena" if hours >= 1 else None
+    return None
+
+
+def _recognition(session) -> list[dict]:
+    ctx = player_context.get_player_context(session["sid"]) if session["sid"] else None
+    _update(session["id"], state="ISSUE_LOOP")
+    if ctx is None:
+        # Mongo dropped between confirm and recognition -- skip the flourish.
+        return [_add_msg(session["id"], "bot", "text",
+                         f"Thanks, {session['player_name'] or 'there'}! {ISSUE_PROMPT}")]
+
+    facts = {
+        "player_name": ctx.nickname,
+        "playing_since": ctx.playing_since,
+        "matches_played": ctx.matches_played,
+        "highlight": _pick_highlight(ctx.stats),
+    }
+    text = None
+    try:
+        text = llm.phrase_recognition(facts)  # the ONE scripted-phase Haiku call
+    except Exception as e:
+        print(f"[warn] chat: recognition phrasing failed, using template ({e!r})")
+    if not text:
+        bits = []
+        if facts["playing_since"]:
+            bits.append(f"thanks for playing with us since {facts['playing_since']}")
+        if facts["matches_played"]:
+            bits.append(f"{facts['matches_played']:,} matches in")
+        line = (f"{ctx.nickname}, " + " — ".join(bits) + "!") if bits \
+            else f"Great to see you, {ctx.nickname}!"
+        if facts["highlight"]:
+            line += f" And {facts['highlight']} — seriously impressive."
+        text = line
+    rec = _add_msg(session["id"], "bot", "recognition", text, {"facts": facts})
+    prompt = _add_msg(session["id"], "bot", "text", ISSUE_PROMPT)
+    return [rec, prompt]
+
+
+def _enter_degraded(session) -> list[dict]:
+    meta = _meta(session)
+    meta["degraded"] = True
+    _save_meta(session["id"], meta)
+    _update(session["id"], state="ISSUE_LOOP")
+    note = _add_msg(session["id"], "system", "system", DEGRADED_NOTE, {"degraded": True})
+    prompt = _add_msg(session["id"], "bot", "text", ISSUE_PROMPT)
+    return [note, prompt]
+
+
+# ------------------------------------------------------------------- issue loop --
+
+def _issue_loop(session, text: str) -> list[dict]:
+    sid = session["id"]
+    meta = _meta(session)
+
+    # 1. message budget (SPEC-08 §3.6)
+    if session["msg_count"] > config.CHAT_MESSAGES_PER_SESSION:
+        return _escalate(session, question=text, reason="message budget reached",
+                         end_reason="msg_budget")
+
+    # 2. pending CSAT answer
+    if meta.pop("csat_pending", None):
+        last_q = meta.pop("last_question", "")
+        _save_meta(sid, meta)
+        if _is_yes(text):
+            _update(sid, state="RESOLVED", ended_at=_now(), end_reason="resolved")
+            return [_add_msg(sid, "bot", "text", RESOLVED_GOODBYE)]
+        if _is_no(text):
+            meta["escalate_offer"] = True
+            meta["last_question"] = last_q
+            _save_meta(sid, meta)
+            return [_add_msg(sid, "bot", "chips", ESCALATE_OFFER, {"chips": ["Yes", "No"]})]
+        # anything else = a new message; fall through and process it normally
+
+    # 3. pending escalation offer
+    if meta.pop("escalate_offer", None):
+        last_q = meta.pop("last_question", "")
+        _save_meta(sid, meta)
+        if _is_yes(text):
+            return _escalate(session, question=last_q or text,
+                             reason="answer didn't resolve the issue")
+        if _is_no(text):
+            return [_add_msg(sid, "bot", "text", ESCALATE_DECLINED)]
+        # fall through: treat as a new question
+
+    # 4. cross-player SID guard (hard, SPEC-08 §3.2) -- raw-text scan, uppercase only
+    foreign = [t for t in SID_TOKEN_RE.findall(text or "") if t != (session["sid"] or "")]
+    if foreign:
+        return [_add_msg(sid, "bot", "text", CROSS_SID_REFUSAL,
+                         {"guard": "cross_sid"})]
+
+    # 5. scope gate (SPEC-08 §3.1)
+    label, score = scope_gate.classify(text)
+    if label in ("out_of_scope", "abuse"):
+        strikes = session["strikes"] + 1
+        _update(sid, strikes=strikes)
+        if strikes >= config.SCOPE_GATE_STRIKE_LIMIT:
+            _update(sid, state="ENDED", ended_at=_now(), end_reason="strikes")
+            return [_add_msg(sid, "bot", "text", STRIKES_GOODBYE,
+                             {"gate": label, "strikes": strikes})]
+        deflection = ABUSE_DEFLECTION if label == "abuse" else OOS_DEFLECTION
+        return [_add_msg(sid, "bot", "text", deflection,
+                         {"gate": label, "strikes": strikes})]
+    if label == "smalltalk":
+        return [_add_msg(sid, "bot", "text", SMALLTALK_REPLY, {"gate": label})]
+    if label == "human_request":
+        return _escalate(session, question=text, reason="player asked for a human")
+
+    # 6. clarify round in flight? (one round max)
+    question = text
+    if meta.get("clarify"):
+        original = meta.get("clarify_question") or ""
+        question = f"{original} — {text}" if original else text
+        meta.pop("clarify", None)
+        meta.pop("clarify_question", None)
+        meta["clarify_used"] = True
+        _save_meta(sid, meta)
+        return _route(session, meta, question)
+
+    ctx = player_context.get_player_context(session["sid"]) if session["sid"] else None
+
+    # 7. data intent: purchases (before generic RAG, SPEC-08 §3.3)
+    if (label == "Payments & Purchases" or _PURCHASE_RE.search(text)) and ctx \
+            and ctx.transactions is not None:
+        return _purchase_reply(session, meta, ctx)
+
+    # 8. data intent: ban / appeal (SPEC-08 §3.3)
+    if (ctx and (ctx.is_banned or ctx.chat_banned)
+            and (label == "Bans & Fair Play" or _BAN_RE.search(text))):
+        return _ban_reply(session, ctx, text)
+
+    # 9. tiered router (SPEC-08 §3.4)
+    return _route(session, meta, question)
+
+
+def _purchase_reply(session, meta: dict, ctx) -> list[dict]:
+    """Summaries only, never raw records (SPEC-08 §3.3)."""
+    t = ctx.transactions
+    if not t["real_money_count"]:
+        text = ("I checked your account and I don't see any real-money purchases on it. "
+                "If you were charged, it may be under a different account or store login "
+                "— happy to flag it for the team.")
+    else:
+        lines = [f"Here's what I can see on your account ({ctx.sid}):",
+                 f"• {t['real_money_count']} real-money purchase(s) via "
+                 f"{', '.join(t['payment_systems']) or 'unknown store'}",
+                 f"• First purchase {t['first_purchase']}, most recent {t['last_purchase']}"]
+        recent = [r for r in t["recent"] if r.get("date")]
+        if recent:
+            lines.append("Most recent:")
+            for r in recent:
+                bits = [r["date"], r.get("product") or "purchase"]
+                if r.get("status"):
+                    bits.append(r["status"])
+                lines.append("• " + " — ".join(str(b) for b in bits))
+        text = "\n".join(lines)
+    msg = _add_msg(session["id"], "bot", "text", text,
+                   {"intent": "purchases", "summary": {k: v for k, v in t.items()
+                                                       if k != "recent"}})
+    return [msg] + _offer_csat(session, meta, "purchases")
+
+
+def _pick_ban_response(conn, text: str, ctx) -> tuple[int | None, str]:
+    """Reply drawn ONLY from the approved 'ban_response:' canned set (SPEC-08 §3.3,
+    guardrail §8.3). Deterministic sub-intent match on the trigger suffix."""
+    rows = conn.execute(
+        "SELECT id, trigger_text, answer FROM canned "
+        "WHERE trigger_text LIKE 'ban_response:%' ORDER BY id ASC"
+    ).fetchall()
+    if not rows:  # migration seeds these; belt-and-braces static fallback
+        return None, ("I've logged your appeal for the Fair Play team to review — "
+                      "they look at every case individually and will follow up.")
+    t = (text or "").lower()
+
+    def find(suffix):
+        return next((r for r in rows if r["trigger_text"].endswith(suffix)), rows[0])
+
+    if ctx.chat_banned and not ctx.is_banned:
+        row = find("chat restriction")
+    elif re.search(r"\b(wasn'?t me|not me|didn'?t|hacked|stolen|someone else|my brother|my friend)\b", t):
+        row = find("says it wasn't them")
+    elif re.search(r"\b(why|reason|what did i do)\b", t):
+        row = find("why was I banned")
+    else:
+        row = find("appeal received")
+    return row["id"], row["answer"]
+
+
+def _ban_reply(session, ctx, text: str) -> list[dict]:
+    conn = db.get_conn()
+    canned_id, answer = _pick_ban_response(conn, text, ctx)
+    # Staff-facing assessment card (the human tester evaluates genuineness; the
+    # "player" never sees a promise). Facts only, all server-computed.
+    card_meta = {
+        "state": ctx.state,
+        "chat_banned": ctx.chat_banned,
+        "report_count_90d": ctx.report_count_90d,
+        "banned_device_overlap": ctx.banned_device_overlap,
+        "payer_tier": ctx.payer_tier,
+        "sid": ctx.sid,
+    }
+    card = _add_msg(session["id"], "bot", "ban_card",
+                    f"Ban assessment — state: {ctx.state or 'Active'}"
+                    f"{' + chatBanned' if ctx.chat_banned else ''}, "
+                    f"reports (90d): {ctx.report_count_90d if ctx.report_count_90d is not None else 'n/a'}, "
+                    f"banned-device overlap: {'yes' if ctx.banned_device_overlap else 'no'}, "
+                    f"payer tier: {ctx.payer_tier}",
+                    card_meta)
+    reply = _add_msg(session["id"], "bot", "text", answer,
+                     {"intent": "ban", "canned_id": canned_id})
+    return [card, reply]
+
+
+def _offer_csat(session, meta: dict, last_question: str) -> list[dict]:
+    meta["csat_pending"] = True
+    meta["last_question"] = last_question
+    _save_meta(session["id"], meta)
+    return [_add_msg(session["id"], "bot", "csat", CSAT_QUESTION,
+                     {"chips": ["Yes", "No"]})]
+
+
+def _route(session, meta: dict, question: str) -> list[dict]:
+    sid = session["id"]
+
+    # Budgets first (SPEC-08 §3.6): once Tier-2 is exhausted (per-session or the
+    # daily global cap) we may only serve the free tiers or escalate -- so don't
+    # call suggest() (its cascade would happily spend a Haiku call).
+    exhausted = (session["tier2_used"] >= config.CHAT_TIER2_PER_SESSION
+                 or _daily_tier2_calls() >= config.CHAT_DAILY_TIER2_CALLS)
+    if exhausted:
+        q_vec = embeddings.embed(question)
+        answer = router._tier0_canned(q_vec)
+        if answer is None:
+            cached = router._answer_cache_lookup(q_vec)
+            answer = cached[1] if cached else None
+        if answer is not None:
+            msg = _add_msg(sid, "bot", "text", answer, {"tier": 0, "budget_exhausted": True})
+            return [msg] + _offer_csat(session, meta, question)
+        return _escalate(session, question=question, reason="tier-2 budget exhausted")
+
+    res = router.suggest(question)  # pure -- no messages/metrics/cache side effects
+
+    if res["tier"] in (0, 1, 2):
+        if res["tier"] == 2:
+            _update(sid, tier2_used=session["tier2_used"] + 1)
+            _bump_usage("tier2_calls")
+        msg = _add_msg(sid, "bot", "text", res["text"],
+                       {"tier": res["tier"], "n_chunks": len(res.get("chunks") or [])})
+        return [msg] + _offer_csat(session, meta, question)
+
+    # Tier 3. Clarify-or-answer band (SPEC-08 §3.4): retrieval landed between
+    # tau_clarify and tau_retrieval -> one round of chips from the top-2 titles.
+    if not meta.get("clarify_used") and not router._is_sensitive(question):
+        hits = vectorstore.search("kb_articles", embeddings.embed(question),
+                                  top_k=2, where="status = 'published'")
+        if hits and config.TAU_CLARIFY <= hits[0][1] < config.TAU_RETRIEVAL_CONFIDENCE:
+            conn = db.get_conn()
+            titles = []
+            for row_id, _sim in hits:
+                row = conn.execute("SELECT title FROM kb_articles WHERE id = ?",
+                                   (row_id,)).fetchone()
+                if row:
+                    titles.append(row["title"])
+            if titles:
+                meta["clarify"] = titles
+                meta["clarify_question"] = question
+                _save_meta(sid, meta)
+                return [_add_msg(sid, "bot", "chips",
+                                 "I want to make sure I get this right — is it one "
+                                 "of these?", {"chips": titles, "clarify": True})]
+
+    return _escalate(session, question=question, reason="no confident KB answer (tier 3)")
+
+
+# ------------------------------------------------------------------- escalation --
+
+def _new_public_id(conn) -> str:
+    while True:
+        pid = "PR-" + "".join(secrets.choice(_BASE32) for _ in range(5))
+        if not conn.execute("SELECT 1 FROM conversations WHERE public_id = ?",
+                            (pid,)).fetchone():
+            return pid
+
+
+def _escalate(session, question: str, reason: str, end_reason: str = "escalated") -> list[dict]:
+    """SPEC-08 §3.5: a real ticket -- conversations row (origin='live', public_id)
+    + the chat transcript as messages + a tier-3 suggestions row with source='chat'
+    carrying issue summary + SID + ban/purchase context. Mirrors the backfill
+    scripts' conversation+suggestion shape exactly."""
+    sid = session["id"]
+    ctx = player_context.get_player_context(session["sid"]) if session["sid"] else None
+
+    context = {
+        "source": "chat",
+        "chat_session_id": sid,
+        "game_choice": session["game_choice"],
+        "from": session["player_name"] or "unverified player",
+        "reason": reason,
+    }
+    summary_bits = [f"SID: {session['sid'] or 'UNVERIFIED'}",
+                    f"player: {session['player_name'] or 'unknown'}"]
+    if ctx:
+        context.update({
+            "payer_tier": ctx.payer_tier,
+            "account_state": ctx.state,
+            "report_count_90d": ctx.report_count_90d,
+            "banned_device_overlap": ctx.banned_device_overlap,
+        })
+        summary_bits.append(f"payer tier: {ctx.payer_tier}")
+        if ctx.is_banned or ctx.chat_banned:
+            summary_bits.append(
+                f"ban state: {ctx.state}{' + chatBanned' if ctx.chat_banned else ''} | "
+                f"reports 90d: {ctx.report_count_90d} | "
+                f"banned-device overlap: {'yes' if ctx.banned_device_overlap else 'no'}")
+        if ctx.transactions and ctx.transactions.get("real_money_count"):
+            t = ctx.transactions
+            summary_bits.append(
+                f"purchases: {t['real_money_count']} real-money via "
+                f"{', '.join(t['payment_systems'])}, last {t['last_purchase']}")
+
+    transcript = db.get_conn().execute(
+        "SELECT role, content FROM chat_messages WHERE session_id = ? "
+        "AND role IN ('user','bot') ORDER BY id ASC", (sid,)
+    ).fetchall()
+
+    full_question = (f"[shadow chat escalation — {reason}]\n"
+                     + " | ".join(summary_bits) + f"\n\nIssue: {question}")
+
+    with db.tx() as c:
+        public_id = _new_public_id(c)
+        cur = c.execute(
+            "INSERT INTO conversations (channel, external_id, status, context, player_id, "
+            "origin, public_id) VALUES ('chat', ?, 'escalated', ?, ?, 'live', ?)",
+            (f"shadow-chat-{sid}", json.dumps(context, ensure_ascii=False),
+             session["sid"], public_id),
+        )
+        conversation_id = cur.lastrowid
+        for m in transcript:
+            c.execute(
+                "INSERT INTO messages (conversation_id, role, tier_used, text) "
+                "VALUES (?, ?, NULL, ?)",
+                (conversation_id, "user" if m["role"] == "user" else "bot", m["content"]),
+            )
+        c.execute(
+            "INSERT INTO suggestions (conversation_id, source, question, suggested_answer, "
+            "tier, retrieved_chunks, status) VALUES (?, 'chat', ?, ?, 3, '[]', 'pending')",
+            (conversation_id, full_question, router.HOLDING_REPLY),
+        )
+    _bump_usage("escalations")
+    _update(sid, state="ESCALATED", escalated_conversation_id=conversation_id,
+            ended_at=_now(), end_reason=end_reason)
+
+    card = _add_msg(sid, "bot", "escalation_card",
+                    f"I've raised this with the team — ticket {public_id}. A human "
+                    "will pick it up from here; thanks for your patience!",
+                    {"conversation_id": conversation_id, "public_id": public_id,
+                     "reason": reason})
+    return [card]

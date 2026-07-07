@@ -1,0 +1,57 @@
+{# =============================================================================
+   templates/web/article.html — 5.3 /kb/article/<slug>
+   Context:
+     article {slug, title, category_slug, category_label, body_html, is_translated,
+              translated_lang, has_translation}
+     related[] {slug, title, snippet}
+   body_html is pre-rendered from KB symptom+answer (h3/p/ol/ul/strong/img).
+============================================================================= #}
+{% extends 'web/base.html' %}
+{% import 'web/_components.html' as c with context %}
+{% block title %}{{ article.title }} · Prime Rush Support{% endblock %}
+
+{% block body %}
+<div class="page">
+  {{ c.breadcrumb([
+      {'label': 'HELP', 'href': '/'},
+      {'label': article.category_label|upper, 'href': '/kb/' ~ article.category_slug},
+      {'label': article.title|truncate(24)|upper}
+  ]) }}
+
+  <h1 class="h1" style="font-size:clamp(24px,5.5vw,34px);margin-block:16px 8px">{{ article.title }}</h1>
+
+  {# translation controls (SPEC 5.3) #}
+  {% if article.is_translated %}
+    <p class="eyebrow" style="margin-block-end:20px">
+      {{ t('article.translated') }} ·
+      <a href="?original=1" style="color:var(--muted)">{{ t('article.view_original') }}</a>
+    </p>
+  {% elif lang != 'en' and not article.has_translation %}
+    <form action="/kb/article/{{ article.slug }}/translate" method="post" style="margin-block:16px 20px">
+      <button class="btn btn--sm btn--ghost" type="submit">{{ t('article.translate') }}</button>
+    </form>
+  {% endif %}
+
+  <article class="prose" style="margin-block-start:20px">
+    {{ article.body_html | safe }}
+  </article>
+
+  {{ c.helpful_vote(article.slug) }}
+
+  {% if related %}
+  <section class="section">
+    <h2 class="eyebrow" style="margin-block-end:4px">{{ t('article.related') }}</h2>
+    <div class="rows">
+      {% for art in related[:3] %}{{ c.article_row(art) }}{% endfor %}
+    </div>
+  </section>
+  {% endif %}
+
+  {{ c.chat_cta() }}
+</div>
+{{ c.identity_sheet() }}
+{% endblock %}
+
+{% block scripts %}
+<script src="{{ url_for('static', filename='web/support.js') }}" defer></script>
+{% endblock %}

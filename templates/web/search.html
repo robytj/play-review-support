@@ -1,0 +1,29 @@
+{# =============================================================================
+   templates/web/search.html — 5.4 /search?q=
+   Context: q · results[] {slug, title, snippet} · count
+============================================================================= #}
+{% extends 'web/base.html' %}
+{% import 'web/_components.html' as c with context %}
+{% block title %}{{ t('search.results', n=count, q=q) }} · Prime Rush Support{% endblock %}
+
+{% block body %}
+<div class="page">
+  {{ c.search_bar(value=q) }}
+
+  {% if results %}
+    <p class="eyebrow section" style="margin-block-start:24px">{{ t('search.results', n=count, q=q) }}</p>
+    <div class="rows">
+      {% for art in results %}{{ c.article_row(art) }}{% endfor %}
+    </div>
+    {{ c.chat_cta() }}
+  {% else %}
+    {{ c.empty_state('compass', t('search.empty_title'), t('search.empty_sub')) }}
+    {{ c.chat_cta() }}
+  {% endif %}
+</div>
+{{ c.identity_sheet() }}
+{% endblock %}
+
+{% block scripts %}
+<script src="{{ url_for('static', filename='web/support.js') }}" defer></script>
+{% endblock %}

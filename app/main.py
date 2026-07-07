@@ -9,10 +9,11 @@ from fastapi import FastAPI
 from pydantic import BaseModel
 
 from app import db, router
-from app import dashboard_api
+from app import chat_api, dashboard_api
 
 app = FastAPI(title="PrimeRush SupportBot")
 app.include_router(dashboard_api.router)
+app.include_router(chat_api.router)  # shadow chat agent (SPEC-08), same bearer key
 
 
 @app.on_event("startup")

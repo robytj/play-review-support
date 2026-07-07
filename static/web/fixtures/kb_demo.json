@@ -1,0 +1,30 @@
+{
+  "_doc": "Fixture for / /kb /search /ticket. Mirrors SPEC-02 KB context. TODO(backend): replace with real KB query results.",
+  "categories": [
+    { "slug": "account",   "icon": "account",   "count": 12 },
+    { "slug": "payments",  "icon": "payments",  "count": 18 },
+    { "slug": "gameplay",  "icon": "gameplay",  "count": 24 },
+    { "slug": "bans",      "icon": "bans",      "count": 9 },
+    { "slug": "technical", "icon": "technical", "count": 21 },
+    { "slug": "updates",   "icon": "updates",   "count": 7 },
+    { "slug": "rewards",   "icon": "rewards",   "count": 14 },
+    { "slug": "general",   "icon": "general",   "count": 6 }
+  ],
+  "popular": [
+    { "slug": "restore-purchases", "title": "Restoring an in-app purchase", "snippet": "If a purchase didn't arrive, restore it from Store → Restore." },
+    { "slug": "cant-log-in", "title": "Can't log in after an update", "snippet": "Clear the login token and re-authenticate with your linked account." },
+    { "slug": "device-ban-appeal", "title": "How to appeal a device ban", "snippet": "Submit your SID and the ban reference from the block screen." },
+    { "slug": "crash-on-launch", "title": "Game crashes on launch (Android)", "snippet": "Low-RAM devices: clear cache, free 1.5GB, disable overlays." },
+    { "slug": "season-rewards-missing", "title": "Season rewards didn't arrive", "snippet": "Rewards sync at season rollover — allow up to 24h." }
+  ],
+  "ticket": {
+    "public_id": "PR-7F3K2",
+    "status": "answered",
+    "messages": [
+      { "author": "you", "time_rel": "2h ago", "time_iso": "2026-07-07T07:10:00Z",
+        "body_html": "<p>Bought the Vanguard skin bundle but only got the emote. Order went through on Google Play.</p>" },
+      { "author": "staff", "time_rel": "1h ago", "time_iso": "2026-07-07T08:05:00Z",
+        "body_html": "<p>Thanks — I can see the order <strong>GPA.3392-1</strong>. The skin grant failed on our side; I've re-issued it. Restart the app and it should appear in your locker within a few minutes.</p>" }
+    ]
+  }
+}

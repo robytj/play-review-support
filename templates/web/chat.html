@@ -1,0 +1,79 @@
+{# =============================================================================
+   templates/web/chat.html — 5.5 / §7  The centerpiece.
+   Server renders the shell + initial transcript (for no-JS + fast paint + SSR
+   restore per SPEC "session restore from server"). chat.js hydrates and drives
+   live messaging. Column max 480px.
+
+   Context:
+     session {public_id, ticket_id, chat_enabled}
+     identity {sid, is_guest, masked_sid}
+     initial_transcript  list of message dicts (same schema as the API) — may be []
+   fixtures/chat_demo.json documents the message schema for chat.js.
+============================================================================= #}
+{% extends 'web/base.html' %}
+{% import 'web/_components.html' as c with context %}
+{% block title %}{{ t('chat.title') }}{% endblock %}
+{% block header %}{% endblock %}
+
+{% block body %}
+<div class="chat-shell" id="chat" data-chat
+     data-session="{{ session.public_id }}"
+     data-endpoint="/api/web/chat/message"
+     data-poll="/api/web/chat/poll"
+     data-enabled="{{ 'true' if session.chat_enabled else 'false' }}">
+
+  {# ---- header (56px) with ticket-id eyebrow once created ---- #}
+  <header class="chat-header">
+    <a class="logo" href="/" aria-label="Back to help" style="gap:8px">
+      <svg class="logo__badge" width="20" height="22" viewBox="0 0 24 27" fill="none" aria-hidden="true">
+        <path d="M12 1 22 6.75V20.25L12 26 2 20.25V6.75L12 1Z" stroke="currentColor" stroke-width="1.5"/>
+      </svg>
+      <span class="logo__name" style="font-size:13px">{{ t('chat.title') }}</span>
+    </a>
+    <span class="chat-header__id" dir="ltr" data-ticket-eyebrow>{{ session.ticket_id or '' }}</span>
+  </header>
+
+  {# offline banner (chat.js toggles .hidden on navigator.onLine) #}
+  <div class="offline-banner hidden" data-offline hidden>{{ t('chat.offline') }}</div>
+
+  {# persistent SID nudge (revealed if sid_prompt dismissed) #}
+  {% if identity and identity.is_guest %}
+  <div class="sid-nudge hidden" data-sid-nudge hidden>
+    <span>{{ t('chat.sid_chip') }}</span>
+    <button class="btn btn--sm" type="button" data-open-identity>{{ t('chat.link_account') }}</button>
+  </div>
+  {% endif %}
+
+  {# ---- transcript ---- #}
+  <div class="transcript" id="transcript" data-transcript
+       role="log" aria-live="polite" aria-relevant="additions" aria-label="{{ t('chat.title') }}">
+    {# SSR seed: chat.js reads [data-seed] JSON then takes over rendering #}
+    {% if initial_transcript %}
+      <script type="application/json" data-seed>{{ initial_transcript | tojson }}</script>
+    {% endif %}
+  </div>
+
+  <button class="new-reply hidden" type="button" data-new-reply hidden>{{ t('chat.new_reply') }}</button>
+
+  {# ---- composer ---- #}
+  <form class="composer" data-composer autocomplete="off">
+    <label class="sr-only" for="composer-input">{{ t('chat.placeholder') }}</label>
+    <textarea id="composer-input" class="composer__input" name="body" rows="1"
+              maxlength="1000" placeholder="{{ t('chat.placeholder') }}" data-input></textarea>
+    <span class="composer__count hidden" data-count aria-hidden="true"></span>
+    <button class="composer__send" type="submit" data-send disabled aria-label="{{ t('chat.send') }}">
+      <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor"
+           stroke-width="1.5" stroke-linecap="square" aria-hidden="true">
+        <path d="M4 12h14M12 6l6 6-6 6"/>
+      </svg>
+    </button>
+  </form>
+</div>
+
+{{ c.identity_sheet() }}
+{% endblock %}
+
+{% block scripts %}
+<script src="{{ url_for('static', filename='web/support.js') }}" defer></script>
+<script src="{{ url_for('static', filename='web/chat.js') }}" defer></script>
+{% endblock %}

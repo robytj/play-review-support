@@ -685,6 +685,8 @@ def post_settings(payload: dict):
     thresholds = payload.get("thresholds")
     sensitive_keywords = payload.get("sensitive_keywords")
     shadow_mode = payload.get("shadow_mode")
+    chat_enabled = payload.get("chat_enabled")  # shadow chat kill switch (SPEC-08 §8)
     return config.write_settings(
-        thresholds=thresholds, sensitive_keywords=sensitive_keywords, shadow_mode=shadow_mode
+        thresholds=thresholds, sensitive_keywords=sensitive_keywords, shadow_mode=shadow_mode,
+        chat_enabled=chat_enabled,
     )

@@ -130,6 +130,61 @@ def distill_cluster_to_article(sample_texts: list[str], model: str = None) -> di
     return fields
 
 
+# ------------------------------------------------- shadow chat agent (SPEC-08) --
+
+RECOGNITION_SYSTEM_PROMPT = """You phrase a short recognition line for a game-support chat.
+You are given a small set of FACTS about the player. Rules, non-negotiable:
+- Use ONLY the provided facts. Never invent, estimate, or embellish numbers, dates, or achievements.
+- At most 2 sentences. Warm and specific, addressed to the player ("you"), no emoji spam (one emoji max).
+- Do not mention facts that are missing from the input. Do not ask a question.
+Output the message text only, nothing else."""
+
+
+def phrase_recognition(facts: dict) -> str:
+    """SPEC-08 §2.4 -- the ONE Haiku call in the scripted phase: turns server-computed
+    recognition facts (playing-since, matches played, one highlight) into a warm
+    2-sentence line. Facts are computed deterministically in app/chat_engine.py;
+    this call only phrases them. Caller falls back to a deterministic template on
+    any failure -- this function just raises through."""
+    client = _get_client()
+    lines = "\n".join(f"- {k}: {v}" for k, v in facts.items() if v not in (None, ""))
+    resp = client.messages.create(
+        model=RAG_MODEL,
+        max_tokens=120,
+        system=[{"type": "text", "text": RECOGNITION_SYSTEM_PROMPT,
+                 "cache_control": {"type": "ephemeral"}}],
+        messages=[{"role": "user", "content": f"FACTS:\n{lines}"}],
+    )
+    return "".join(b.text for b in resp.content if b.type == "text").strip()
+
+
+def extract_sid_from_image(image_b64: str, media_type: str) -> str | None:
+    """SPEC-08 §2.2 -- Haiku vision pass over a player-uploaded profile/settings
+    screenshot. Returns an uppercase 8-char SID-shaped token or None; the caller
+    still validates it against Mongo (this extracts, it never authenticates)."""
+    import re as _re
+    client = _get_client()
+    resp = client.messages.create(
+        model=RAG_MODEL,
+        max_tokens=50,
+        messages=[{
+            "role": "user",
+            "content": [
+                {"type": "image",
+                 "source": {"type": "base64", "media_type": media_type, "data": image_b64}},
+                {"type": "text",
+                 "text": ("This is a screenshot of a game profile or settings screen. "
+                          "Find the player ID / SID: an 8-character code of capital "
+                          "letters and digits (e.g. AB12CD3E). Reply with ONLY that "
+                          "8-character code, or NONE if you can't find one.")},
+            ],
+        }],
+    )
+    text = "".join(b.text for b in resp.content if b.type == "text").strip().upper()
+    m = _re.search(r"\b[A-Z0-9]{8}\b", text)
+    return m.group(0) if m else None
+
+
 # ---------------------------------------------------------------- categorization --
 
 # No-API-call fallback: used to backfill category on rows that predate the

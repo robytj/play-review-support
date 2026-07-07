@@ -1,0 +1,51 @@
+{# =============================================================================
+   templates/web/ticket.html — 5.7 /ticket/<public_id>
+   Context:
+     ticket {public_id, status}  status ∈ open|answered|escalated|resolved|closed
+     messages[] {author('you'|'staff'), time_rel, time_iso, body_html}
+============================================================================= #}
+{% extends 'web/base.html' %}
+{% import 'web/_components.html' as c with context %}
+{% block title %}Ticket {{ ticket.public_id }} · Prime Rush Support{% endblock %}
+
+{% block body %}
+<div class="page">
+  <div style="display:flex;align-items:center;justify-content:space-between;gap:12px;flex-wrap:wrap">
+    <span class="big-id" dir="ltr" style="font-size:22px;margin:0">{{ ticket.public_id }}</span>
+    {{ c.status_pill(ticket.status) }}
+  </div>
+
+  <section class="thread section" aria-label="Ticket conversation">
+    {% for m in messages %}
+    <div class="thread__msg {{ 'thread__msg--staff' if m.author == 'staff' else '' }}">
+      <div class="thread__meta">
+        <span class="thread__author">{{ t('ticket.staff') if m.author == 'staff' else t('ticket.you') }}</span>
+        <time class="thread__time" dir="ltr" datetime="{{ m.time_iso }}">{{ m.time_rel }}</time>
+      </div>
+      <div class="thread__body">{{ m.body_html | safe }}</div>
+    </div>
+    {% endfor %}
+  </section>
+
+  {% if ticket.status in ['open', 'answered', 'escalated'] %}
+    <form class="section" action="/ticket/{{ ticket.public_id }}/reply" method="post">
+      <label class="field">
+        <span class="sr-only">{{ t('ticket.reply_placeholder') }}</span>
+        <textarea class="field__input" name="body" rows="3" style="min-height:88px;resize:vertical"
+                  placeholder="{{ t('ticket.reply_placeholder') }}"></textarea>
+      </label>
+      <button class="btn" type="submit" style="margin-block-start:12px">{{ t('identity.continue') }}</button>
+    </form>
+  {% else %}
+    <div class="cta section">
+      <div class="cta__title">{{ t('ticket.closed_cta') }}</div>
+      <a class="btn" href="/chat">{{ t('cta.chat') }}</a>
+    </div>
+  {% endif %}
+</div>
+{{ c.identity_sheet() }}
+{% endblock %}
+
+{% block scripts %}
+<script src="{{ url_for('static', filename='web/support.js') }}" defer></script>
+{% endblock %}

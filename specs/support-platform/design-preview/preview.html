@@ -1,0 +1,205 @@
+<!doctype html>
+<html lang="en" dir="ltr">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Prime Rush Support — Rendered Preview</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Archivo:wght@800;900&family=Inter:wght@400;500;600&family=Space+Mono:wght@400;700&display=swap">
+<link rel="stylesheet" href="static/web/support.css">
+<style>
+  /* preview harness only — not part of deliverable */
+  body { background:#050505; }
+  .harness { max-width:1180px; margin-inline:auto; padding:32px clamp(12px,3vw,32px) 96px; }
+  .harness__head { border-block-end:1px solid var(--hairline); padding-block-end:20px; margin-block-end:28px; }
+  .harness__grid { display:grid; grid-template-columns:repeat(auto-fill,minmax(380px,1fr)); gap:28px; align-items:start; }
+  .frame { border:1px solid var(--hairline); background:var(--black); }
+  .frame__cap { font-family:var(--font-mono); font-size:11px; letter-spacing:.14em; text-transform:uppercase; color:var(--muted-2); padding:10px 14px; border-block-end:1px solid var(--hairline); background:var(--surface-2); display:flex; justify-content:space-between; }
+  .frame__view { height:720px; overflow-y:auto; overflow-x:hidden; position:relative; }
+  .frame__view::-webkit-scrollbar { width:6px; } .frame__view::-webkit-scrollbar-thumb { background:var(--hairline); }
+  .frame--wide { grid-column:1/-1; }
+  /* neutralize sticky/fixed inside frames so they scope to the frame */
+  .frame .site-header, .frame .chat-header { position:sticky; }
+  .frame .toast-layer, .frame .sheet-scrim { position:absolute; }
+  .frame .chat-shell { height:720px; border-inline:none; }
+</style>
+</head>
+<body>
+<div class="harness">
+  <div class="harness__head">
+    <p class="eyebrow">SPEC-02A · RENDERED PREVIEW</p>
+    <h1 class="h1" style="font-size:34px;margin-block:8px 6px">support.primerush.gg</h1>
+    <p class="muted">Static render of the Jinja2 templates against the real <span class="mono">support.css</span> + <span class="mono">chat.js</span>. Each frame is a live page at ~380px (in-game WebView width). Chat renders all 11 message kinds from the fixture seed.</p>
+  </div>
+  <div class="harness__grid" id="grid"></div>
+</div>
+
+<!-- ============ ICON + PARTIAL HELPERS (mirror _icons.html / _logo.html) ============ -->
+<script>
+const ICONS = {
+  account:'<circle cx="12" cy="8" r="4"/><path d="M4 21c0-4 3.6-6 8-6s8 2 8 6"/>',
+  payments:'<rect x="3" y="6" width="18" height="12"/><path d="M3 10h18"/>',
+  gameplay:'<rect x="2.5" y="7" width="19" height="10"/><path d="M7 12h4M9 10v4M15.5 11.5h.01M18 13.5h.01"/>',
+  bans:'<circle cx="12" cy="12" r="9"/><path d="M5.6 5.6 18.4 18.4"/>',
+  technical:'<path d="M14.7 6.3a4 4 0 0 0-5.3 5.3L4 17l3 3 5.4-5.4a4 4 0 0 0 5.3-5.3l-2.5 2.5-2.1-2.1 2.6-2.4Z"/>',
+  updates:'<path d="M21 12a9 9 0 1 1-2.6-6.3"/><path d="M21 4v4h-4"/>',
+  rewards:'<path d="M12 15a5 5 0 0 0 5-5V4H7v6a5 5 0 0 0 5 5Z"/><path d="M12 15v4M8 21h8M7 5H4v2a3 3 0 0 0 3 3M17 5h3v2a3 3 0 0 1-3 3"/>',
+  general:'<circle cx="12" cy="12" r="9"/><path d="M9.5 9.5a2.5 2.5 0 1 1 3.4 2.3c-.6.3-.9.7-.9 1.4v.3"/><path d="M12 17h.01"/>',
+  search:'<circle cx="11" cy="11" r="7"/><path d="m21 21-4.3-4.3"/>',
+  globe:'<circle cx="12" cy="12" r="9"/><path d="M3 12h18M12 3c2.5 2.4 3.9 5.6 4 9-.1 3.4-1.5 6.6-4 9-2.5-2.4-3.9-5.6-4-9 .1-3.4 1.5-6.6 4-9Z"/>',
+  check:'<path d="m4 12 5 5L20 6"/>', chevron:'<path d="m9 5 7 7-7 7"/>',
+  'chevron-down':'<path d="m5 9 7 7 7-7"/>', arrow:'<path d="M5 12h14M13 6l6 6-6 6"/>',
+  'thumb-up':'<path d="M7 10v10H4V10h3Zm0 0 4-7a2 2 0 0 1 2 2v3h5a2 2 0 0 1 2 2.3l-1.2 6A2 2 0 0 1 16.8 20H7"/>',
+  'thumb-down':'<path d="M17 14V4h3v10h-3Zm0 0-4 7a2 2 0 0 1-2-2v-3H6a2 2 0 0 1-2-2.3l1.2-6A2 2 0 0 1 7.2 4H17"/>',
+  close:'<path d="M6 6 18 18M18 6 6 18"/>', chat:'<path d="M4 5h16v11H9l-5 4V5Z"/><path d="M8 10h.01M12 10h.01M16 10h.01"/>',
+  mail:'<rect x="3" y="5" width="18" height="14"/><path d="m3 6 9 7 9-7"/>',
+  compass:'<circle cx="12" cy="12" r="9"/><path d="m15.5 8.5-2 5.5-5.5 2 2-5.5 5.5-2Z"/>',
+  warning:'<path d="M12 3 22 20H2L12 3Z"/><path d="M12 10v4M12 17h.01"/>'
+};
+const icon=(n,s=24,c='')=>`<svg class="${c}" width="${s}" height="${s}" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="square" aria-hidden="true" style="width:${s}px;height:${s}px">${ICONS[n]||ICONS.general}</svg>`;
+const badge=(s=24)=>`<svg class="logo__badge" width="${s}" height="${Math.round(s*1.125)}" viewBox="0 0 24 27" fill="none" aria-hidden="true"><path d="M12 1 22 6.75V20.25L12 26 2 20.25V6.75L12 1Z" stroke="currentColor" stroke-width="1.5"/><path d="M9.2 17.4V9.6h3.1c1.7 0 2.7.9 2.7 2.4 0 1.2-.7 2-1.8 2.3l1.9 3.1h-1.7l-1.7-2.9h-1v2.9H9.2Zm1.5-4.1h1.4c.8 0 1.3-.4 1.3-1.1 0-.7-.5-1.1-1.3-1.1h-1.4v2.2Z" fill="currentColor"/></svg>`;
+const header=()=>`<header class="site-header"><div class="site-header__inner">
+  <a class="logo" href="#"> ${badge(24)}<span class="logo__text"><span class="logo__name">Prime Rush</span><span class="logo__sub">Support</span></span></a>
+  <div class="header-tools">
+    <button class="lang" type="button">${icon('globe',15)}<span dir="ltr">EN</span></button>
+    <button class="chip-id chip-id--guest" type="button"><span dir="ltr">ADD SID</span></button>
+  </div></div></header>`;
+const catRow=(slug,ic,name,n)=>`<a class="row" href="#"><span class="row__icon">${icon(ic,24)}</span><span class="row__body"><span class="row__title">${name}</span><span class="row__meta">${n} articles</span></span>${icon('chevron',16,'row__chev')}</a>`;
+const artRow=(t,s)=>`<a class="row" href="#"><span class="row__body"><span class="row__title row__title--article">${t}</span>${s?`<span class="row__snippet">${s}</span>`:''}</span>${icon('chevron',16,'row__chev')}</a>`;
+const searchBar=(v='')=>`<form class="search" onsubmit="return false">${icon('search',18)}<input type="search" value="${v}" placeholder="SEARCH HELP…"><button type="submit" aria-label="Search">${icon('arrow',18)}</button></form>`;
+const cta=()=>`<div class="cta section"><div><div class="cta__title">Still need help?</div><div class="cta__sub">Usually replies instantly</div></div><a class="btn" href="#">${icon('chat',16)}Chat with us</a></div>`;
+const footer=()=>`<footer class="site-footer"><div class="site-footer__links"><a href="#">Privacy</a><a href="#">Terms</a><a href="#">store.primerush.gg</a></div><div class="site-footer__copy eyebrow">© SuperGaming</div></footer>`;
+
+const CATS=[['account','account','Account & Login',12],['payments','payments','Payments & Purchases',18],['gameplay','gameplay','Gameplay & Progression',24],['bans','bans','Bans & Fair Play',9],['technical','technical','Technical Issues',21],['updates','updates','Updates & Patches',7],['rewards','rewards','Rewards & Events',14],['general','general','General',6]];
+const POP=[['Restoring an in-app purchase','If a purchase didn\u2019t arrive, restore it from Store → Restore.'],['Can\u2019t log in after an update','Clear the login token and re-authenticate.'],['How to appeal a device ban','Submit your SID and the ban reference.'],['Game crashes on launch (Android)','Low-RAM devices: clear cache, free 1.5GB.'],['Season rewards didn\u2019t arrive','Rewards sync at rollover — allow up to 24h.']];
+
+function frame(cap, meta, inner, cls=''){
+  return `<div class="frame ${cls}"><div class="frame__cap"><span>${cap}</span><span>${meta||''}</span></div><div class="frame__view">${inner}</div></div>`;
+}
+
+const grid=document.getElementById('grid');
+let html='';
+
+/* HOME */
+html+=frame('/', 'Home', header()+`<div class="page">
+  <p class="eyebrow">PRIME RUSH — PLAYER SUPPORT</p>
+  <h1 class="h1" style="margin-block:12px 24px">How can we help?</h1>
+  ${searchBar()}
+  <section class="section"><h2 class="eyebrow" style="margin-block-end:4px">Browse by topic</h2>
+  <div class="rows">${CATS.map(c=>catRow(...c)).join('')}</div></section>
+  <section class="section"><h2 class="eyebrow" style="margin-block-end:4px">Popular articles</h2>
+  <div class="rows">${POP.map(p=>artRow(...p)).join('')}</div></section>
+  ${cta()}</div>${footer()}`);
+
+/* ARTICLE */
+html+=frame('/kb/article/…', 'Article + vote', header()+`<div class="page">
+  <nav class="crumb eyebrow"><a href="#">HELP</a><span>/</span><a href="#">PAYMENTS &amp; PURCHASES</a><span>/</span><span style="color:var(--white)">RESTORING AN IN-APP…</span></nav>
+  <h1 class="h1" style="font-size:clamp(24px,5.5vw,34px);margin-block:16px 8px">Restoring an in-app purchase</h1>
+  <article class="prose" style="margin-block-start:20px">
+    <p>If a purchase went through on Google Play or the App Store but didn\u2019t appear in your locker, you can restore it yourself in under a minute.</p>
+    <h3>Restore from the store</h3>
+    <ol><li>Open <strong>Store → Restore purchases</strong>.</li><li>Sign in with the <strong>same account</strong> used to buy.</li><li>Wait about 30 seconds for the entitlement to sync.</li></ol>
+    <p>Still missing after a restart? Start a chat and we\u2019ll pull your order history.</p>
+  </article>
+  <div class="vote section hairline-top" style="padding-block-start:24px"><span class="vote__label">Was this helpful?</span>
+    <div class="vote__btns"><button class="vote__btn" aria-label="Yes">${icon('thumb-up',18)}</button><button class="vote__btn" aria-label="No">${icon('thumb-down',18)}</button></div></div>
+  <section class="section"><h2 class="eyebrow" style="margin-block-end:4px">Related articles</h2>
+  <div class="rows">${artRow('Purchase pending for hours','')}${artRow('Wrong item delivered','')}${artRow('Refund policy','')}</div></section>
+  ${cta()}</div>`);
+
+/* SEARCH EMPTY */
+html+=frame('/search?q=…', 'Empty results', header()+`<div class="page">${searchBar('vbuck')}
+  <div class="empty"><div class="illus" style="max-width:220px;aspect-ratio:1;margin-inline:auto;border:none;background:none">${icon('compass',96)}</div>
+  <div class="empty__title">No results</div><div class="empty__sub">No results. Try the category list, or just ask us.</div></div>${cta()}</div>`);
+
+/* TICKET */
+html+=frame('/ticket/PR-7F3K2', 'Ticket status', header()+`<div class="page">
+  <div style="display:flex;align-items:center;justify-content:space-between;gap:12px;flex-wrap:wrap">
+    <span class="big-id" dir="ltr" style="font-size:22px;margin:0">PR-7F3K2</span>
+    <span class="pill pill--answered"><span class="pill__dot"></span><span dir="ltr">ANSWERED</span></span></div>
+  <section class="thread section">
+    <div class="thread__msg"><div class="thread__meta"><span class="thread__author">YOU</span><time class="thread__time" dir="ltr">2h ago</time></div>
+      <div class="thread__body">Bought the Vanguard skin bundle but only got the emote. Order went through on Google Play.</div></div>
+    <div class="thread__msg thread__msg--staff"><div class="thread__meta"><span class="thread__author">PRIME RUSH SUPPORT</span><time class="thread__time" dir="ltr">1h ago</time></div>
+      <div class="thread__body">Thanks — I can see order <strong>GPA.3392-1</strong>. The skin grant failed on our side; I\u2019ve re-issued it. Restart the app and it should appear within a few minutes.</div></div>
+  </section>
+  <form class="section" onsubmit="return false"><textarea class="field__input" rows="3" style="min-height:88px" placeholder="Add a reply…"></textarea>
+  <button class="btn" style="margin-block-start:12px">Continue</button></form></div>`);
+
+/* 404 */
+html+=frame('/404', 'Not found', header()+`<div class="page" style="min-height:60vh;display:flex;flex-direction:column;justify-content:center">
+  <div class="empty"><div class="illus" style="max-width:220px;aspect-ratio:1;margin-inline:auto;border:none;background:none">${icon('compass',96)}</div>
+  <div class="empty__title">Lost in the drop zone</div><div class="empty__sub">That page dropped off the map.</div></div>
+  <div style="text-align:center;margin-block-start:8px"><a class="btn" href="#">Back to help</a></div></div>`);
+
+/* IDENTITY SHEET (rendered inline, open) */
+html+=frame('Identity sheet', 'Guest → identified', `<div style="position:relative;height:100%;background:var(--black)">
+  <div class="sheet-scrim" style="position:absolute">
+   <div class="sheet">
+    <div class="sheet__head"><h2 class="h2" id="pt">Link your player account</h2><button class="sheet__close">${icon('close',18)}</button></div>
+    <form class="stack" style="--gap:18px;margin-block-start:24px" onsubmit="return false">
+      <label class="field"><span class="field__label" dir="ltr">PLAYER SID</span><input class="field__input field__input--sid" dir="ltr" placeholder="PR-XXXX-XXXX"></label>
+      <div class="eyebrow" style="text-align:center">or registered email</div>
+      <label class="field"><span class="field__label" dir="ltr">EMAIL</span><input class="field__input" type="email" placeholder="you@example.com"></label>
+      <button class="btn btn--block">Continue</button>
+      <button class="link-muted" type="button" style="align-self:center">Continue without SID</button>
+    </form>
+    <details class="disclose" style="margin-block-start:24px"><summary class="disclose__row"><span>Where\u2019s my SID?</span>${icon('chevron-down',16)}</summary>
+      <div class="disclose__body"><div class="illus illus--sm">SETTINGS · PROFILE SCREENSHOT</div>
+      <ol style="margin-block-start:16px"><li>Open Prime Rush and tap Settings (gear, top-right).</li><li>Tap your profile name to open the Profile panel.</li><li>Your SID is under the avatar — tap to copy it.</li></ol></div></details>
+   </div></div></div>`);
+
+grid.innerHTML=html;
+
+/* CHAT frame — real chat.js renders all 11 kinds from the seed */
+const chatSeedFrame=document.createElement('div');
+chatSeedFrame.className='frame frame--wide';
+</script>
+
+<!-- CHAT: real chat-shell hydrated by chat.js (data-enabled=false → renders seed, no network) -->
+<div class="harness" style="padding-block:0 96px">
+  <div class="frame frame--wide">
+    <div class="frame__cap"><span>/chat</span><span>All 11 message kinds · live chat.js</span></div>
+    <div class="frame__view" style="height:auto;max-height:900px">
+      <div class="chat-shell" data-chat data-enabled="false" data-session="demo" data-endpoint="#" data-poll="#" style="height:auto;border-inline:none">
+        <header class="chat-header">
+          <a class="logo" href="#" style="gap:8px"><svg class="logo__badge" width="20" height="22" viewBox="0 0 24 27" fill="none"><path d="M12 1 22 6.75V20.25L12 26 2 20.25V6.75L12 1Z" stroke="currentColor" stroke-width="1.5"/></svg><span class="logo__name" style="font-size:13px">PRIME RUSH SUPPORT</span></a>
+          <span class="chat-header__id" dir="ltr" data-ticket-eyebrow></span>
+        </header>
+        <div class="transcript" data-transcript role="log" aria-live="polite" style="height:auto;max-height:760px">
+          <script type="application/json" data-seed id="chat-seed">[]</script>
+        </div>
+        <button class="new-reply hidden" data-new-reply hidden>↓ new reply</button>
+        <form class="composer" data-composer autocomplete="off">
+          <textarea class="composer__input" rows="1" maxlength="1000" placeholder="Type your message…" data-input></textarea>
+          <span class="composer__count hidden" data-count></span>
+          <button class="composer__send" type="submit" data-send disabled aria-label="Send"><svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="square"><path d="M4 12h14M12 6l6 6-6 6"/></svg></button>
+        </form>
+      </div>
+    </div>
+  </div>
+</div>
+
+<div class="toast-layer" id="toast-layer" aria-live="polite"></div>
+
+<!-- inject the all-kinds seed before chat.js boots -->
+<script>
+document.getElementById('chat-seed').textContent = JSON.stringify([
+  {id:1,type:"context_card",items:[{label:"Device",value:"Redmi Note 10"},{label:"App version",value:"4.2.1 (Android)"},{label:"SID",value:"PR-8K2M-4QX9"}]},
+  {id:2,type:"text",author:"bot",time:"2026-07-07T09:12:00Z",text:"Hey — I can see you\u2019re on **v4.2.1**. What\u2019s going on today?"},
+  {id:3,type:"chips",options:[{label:"Missing purchase",value:"mp"},{label:"Can\u2019t log in",value:"li"},{label:"Game crashes",value:"gc"}]},
+  {id:4,type:"text",author:"player",time:"2026-07-07T09:12:20Z",text:"Missing purchase — bought a skin, didn\u2019t arrive."},
+  {id:5,type:"text",author:"bot",text:"Here\u2019s how to restore it:\n- Open **Store → Restore**\n- Sign in with the same account\n- Wait ~30s to sync",article_ref:{slug:"restore-purchases",title:"Restoring an in-app purchase"}},
+  {id:6,type:"sid_prompt",text:"Add your SID and I can pull up your purchase history."},
+  {id:7,type:"escalation_card",ticket_id:"PR-7F3K2",needs_email:true,note:"A human will take it from here. We\u2019ll reply here and at your ticket page."},
+  {id:8,type:"offer_card",campaign:"SORRY FOR THE TROUBLE",text:"A small credit for the wait.",code:"PRIME-CR3D-2026",expiry:"14 Jul 2026",redeem_url:"#"},
+  {id:9,type:"recognition",text:"By the way — 300 wins is no joke. Genuinely impressive. Thanks for sticking with us."},
+  {id:10,type:"csat",text:"Did this solve it?"},
+  {id:11,type:"unavailable",text:"Chat is busy — browse help articles or leave a ticket."}
+]);
+</script>
+<script src="static/web/support.js" defer></script>
+<script src="static/web/chat.js" defer></script>
+</body>
+</html>

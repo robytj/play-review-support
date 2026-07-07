@@ -27,3 +27,14 @@ learning:
   canned_promotion_min_positive_rate: 0.9
 discord:
   shadow_mode: true
+chat:
+  enabled: true
+  tau_clarify: 0.45
+chat_budgets:
+  tier2_per_session: 8
+  messages_per_session: 30
+  daily_tier2_calls: 300
+scope_gate:
+  enabled: true
+  min_score: 0.35
+  strike_limit: 3

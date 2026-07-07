@@ -1,0 +1,53 @@
+{# =============================================================================
+   templates/web/base.html — document shell for all pages.
+
+   Context contract (SPEC-02):
+     lang           str   "en" | "pt-BR" | "es" | "ar"        (default "en")
+     dir            str   "ltr" | "rtl"   (rtl only for ar)
+     t              fn    t('key', **fmt) → localized string
+     identity       dict  {sid, is_guest, masked_sid}         (chip state)
+     web_chat_enabled bool                                    (CTA swap)
+     page_title     str
+   Blocks: title, header (default provided), body, footer (default), scripts.
+============================================================================= #}
+<!doctype html>
+<html lang="{{ lang|default('en') }}" dir="{{ dir|default('ltr') }}">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+  <meta name="theme-color" content="#0A0A0A">
+  <meta name="color-scheme" content="dark">
+  <title>{% block title %}{{ page_title|default('Prime Rush Support') }}{% endblock %}</title>
+
+  {# ---- Fonts: preconnect + swap, subset latin+latin-ext (ar falls back to system) ---- #}
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Archivo:wght@800;900&family=Inter:wght@400;500;600&family=Space+Mono:wght@400;700&display=swap">
+
+  <link rel="icon" href="{{ url_for('static', filename='web/favicon.svg') }}" type="image/svg+xml">
+  <link rel="stylesheet" href="{{ url_for('static', filename='web/support.css') }}">
+
+  {# size-adjust fallback metrics — kills H1 CLS from Archivo swap (SPEC §9) #}
+  <style>
+    @font-face{font-family:"Archivo Fallback";src:local("Arial");
+      size-adjust:118%;ascent-override:88%;descent-override:22%;line-gap-override:0%}
+    .display,.h1{font-family:"Archivo","Archivo Fallback",system-ui,sans-serif}
+  </style>
+  {% block head_extra %}{% endblock %}
+</head>
+<body>
+  <a class="sr-only" href="#main">Skip to content</a>
+
+  {% block header %}{% include 'web/_components.html' %}{{ site_header() }}{% endblock %}
+
+  <main id="main">
+    {% block body %}{% endblock %}
+  </main>
+
+  {% block footer %}{{ site_footer() }}{% endblock %}
+
+  <div class="toast-layer" id="toast-layer" aria-live="polite" aria-atomic="true"></div>
+
+  {% block scripts %}{% endblock %}
+</body>
+</html>

@@ -1,0 +1,47 @@
+{
+  "_doc": "Fixture for /chat + /dev/components. Documents the API message schema chat.js renders. Backend (SPEC-02) returns {messages:[...]} from /api/web/chat/message and /poll. TODO(backend): wire real endpoints; these shapes are the contract.",
+  "session": { "public_id": "s_9f3k2a", "ticket_id": "PR-7F3K2", "chat_enabled": true },
+  "initial_transcript": [
+    { "id": 1, "type": "context_card", "items": [
+      { "label": "Device", "value": "Redmi Note 10" },
+      { "label": "App version", "value": "4.2.1 (Android)" },
+      { "label": "SID", "value": "PR-8K2M-4QX9" }
+    ]},
+    { "id": 2, "type": "text", "author": "bot", "time": "2026-07-07T09:12:00Z",
+      "text": "Hey — I can see you're on **v4.2.1**. What's going on today?" },
+    { "id": 3, "type": "chips", "options": [
+      { "label": "Missing purchase", "value": "missing_purchase" },
+      { "label": "Can't log in", "value": "login" },
+      { "label": "Game crashes", "value": "crash" },
+      { "label": "Something else", "value": "other" }
+    ]}
+  ],
+  "demo_all_kinds": [
+    { "id": 101, "type": "typing" },
+    { "id": 102, "type": "text", "author": "bot", "time": "2026-07-07T09:12:00Z",
+      "text": "Here's how to restore a purchase:\n- Open **Store → Restore**\n- Sign in with the same account\n- Wait ~30s for the sync\nMore detail here: [Restoring purchases](https://support.primerush.gg/kb/article/restore-purchases)" },
+    { "id": 103, "type": "text", "author": "player", "time": "2026-07-07T09:12:30Z",
+      "text": "I did that but the skin still isn't showing." },
+    { "id": 104, "type": "chips", "options": [
+      { "label": "Yes", "value": "yes" }, { "label": "No", "value": "no" } ]},
+    { "id": 105, "type": "context_card", "items": [
+      { "label": "Device", "value": "Redmi Note 10" },
+      { "label": "App version", "value": "4.2.1" },
+      { "label": "SID", "value": "PR-8K2M-4QX9" } ]},
+    { "id": 106, "type": "sid_prompt",
+      "text": "Add your SID and I can pull up your purchase history." },
+    { "id": 107, "type": "text", "author": "bot",
+      "text": "This article covers the exact steps for your case:",
+      "article_ref": { "slug": "restore-purchases", "title": "Restoring an in-app purchase" } },
+    { "id": 108, "type": "escalation_card", "ticket_id": "PR-7F3K2", "needs_email": true,
+      "note": "A human will take it from here. We'll reply here and at your ticket page." },
+    { "id": 109, "type": "csat", "text": "Did this solve it?" },
+    { "id": 110, "type": "offer_card", "campaign": "SORRY FOR THE TROUBLE",
+      "text": "A small credit for the wait.", "code": "PRIME-CR3D-2026",
+      "expiry": "14 Jul 2026", "redeem_url": "https://store.primerush.gg/redeem" },
+    { "id": 111, "type": "recognition",
+      "text": "By the way — 300 wins is no joke. Genuinely impressive. Thanks for sticking with us." },
+    { "id": 112, "type": "unavailable",
+      "text": "Chat is busy — browse help articles or leave a ticket." }
+  ]
+}

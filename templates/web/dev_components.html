@@ -1,0 +1,72 @@
+{# =============================================================================
+   templates/web/dev_components.html — /dev/components (staff-only, SPEC §10).
+   Preview harness for every §7 chat kind + shared components. Doubles as the
+   SPEC-07 review surface. Guard with a staff flag in the route.
+   Context: demo (fixtures/chat_demo.json → demo_all_kinds), categories, popular.
+============================================================================= #}
+{% extends 'web/base.html' %}
+{% import 'web/_components.html' as c with context %}
+{% block title %}Component Gallery · Prime Rush Support{% endblock %}
+{% block header %}{% endblock %}
+
+{% block body %}
+<div class="gallery">
+  <h1 class="h1" style="font-size:32px;margin-block-end:8px">Component Gallery</h1>
+  <p class="muted" style="margin-block-end:40px">SPEC-02a review harness — every shared component and all 11 chat message kinds.</p>
+
+  <div class="gallery__item">
+    <div class="gallery__label">Header</div>
+    {{ c.site_header() }}
+  </div>
+
+  <div class="gallery__item">
+    <div class="gallery__label">Search bar</div>
+    {{ c.search_bar() }}
+  </div>
+
+  <div class="gallery__item">
+    <div class="gallery__label">Category rows</div>
+    <div class="rows">{% for cat in categories[:3] %}{{ c.category_row(cat) }}{% endfor %}</div>
+  </div>
+
+  <div class="gallery__item">
+    <div class="gallery__label">Article rows</div>
+    <div class="rows">{% for a in popular[:3] %}{{ c.article_row(a) }}{% endfor %}</div>
+  </div>
+
+  <div class="gallery__item">
+    <div class="gallery__label">CTA banner</div>
+    {{ c.chat_cta() }}
+  </div>
+
+  <div class="gallery__item">
+    <div class="gallery__label">Helpful vote</div>
+    {{ c.helpful_vote('demo') }}
+  </div>
+
+  <div class="gallery__item">
+    <div class="gallery__label">Status pills</div>
+    <div style="display:flex;gap:8px;flex-wrap:wrap">
+      {{ c.status_pill('open') }}{{ c.status_pill('answered') }}{{ c.status_pill('escalated') }}
+      {{ c.status_pill('resolved') }}{{ c.status_pill('closed') }}
+    </div>
+  </div>
+
+  <div class="gallery__item">
+    <div class="gallery__label">Chat — all 11 message kinds</div>
+    <div class="chat-shell" data-chat data-enabled="false" data-session="demo"
+         data-endpoint="#" data-poll="#" style="height:auto;max-height:none">
+      <div class="transcript" data-transcript role="log" style="height:auto;max-height:none">
+        <script type="application/json" data-seed>{{ demo | tojson }}</script>
+      </div>
+    </div>
+  </div>
+</div>
+
+{{ c.identity_sheet() }}
+{% endblock %}
+
+{% block scripts %}
+<script src="{{ url_for('static', filename='web/support.js') }}" defer></script>
+<script src="{{ url_for('static', filename='web/chat.js') }}" defer></script>
+{% endblock %}

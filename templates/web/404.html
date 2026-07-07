@@ -1,0 +1,14 @@
+{# =============================================================================
+   templates/web/404.html — 5.8 error
+============================================================================= #}
+{% extends 'web/base.html' %}
+{% import 'web/_components.html' as c with context %}
+{% block title %}404 · Prime Rush Support{% endblock %}
+{% block body %}
+<div class="page" style="min-height:60vh;display:flex;flex-direction:column;justify-content:center">
+  {{ c.empty_state('compass', t('err.404_title'), t('err.404_sub')) }}
+  <div style="text-align:center;margin-block-start:8px">
+    <a class="btn" href="/">{{ t('search.back') }}</a>
+  </div>
+</div>
+{% endblock %}

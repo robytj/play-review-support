@@ -1,0 +1,41 @@
+{# =============================================================================
+   templates/web/index.html — 5.1 Home (/)
+   Context: categories[] {slug, icon, count} · popular[] {slug, title, snippet}
+   First screenful @360×640 shows header, H1, search, ≥2 category rows.
+============================================================================= #}
+{% extends 'web/base.html' %}
+{% import 'web/_components.html' as c with context %}
+{% block title %}{{ t('home.h1') }} · Prime Rush Support{% endblock %}
+
+{% block body %}
+<div class="page">
+  <p class="eyebrow">{{ t('home.eyebrow') }}</p>
+  <h1 class="h1" style="margin-block:12px 24px">{{ t('home.h1') }}</h1>
+
+  {{ c.search_bar() }}
+
+  <section class="section">
+    <h2 class="eyebrow" style="margin-block-end:4px">{{ t('home.categories') }}</h2>
+    <div class="rows">
+      {% for cat in categories %}{{ c.category_row(cat) }}{% endfor %}
+    </div>
+  </section>
+
+  {% if popular %}
+  <section class="section">
+    <h2 class="eyebrow" style="margin-block-end:4px">{{ t('home.popular') }}</h2>
+    <div class="rows">
+      {% for art in popular[:5] %}{{ c.article_row(art) }}{% endfor %}
+    </div>
+  </section>
+  {% endif %}
+
+  {{ c.chat_cta() }}
+</div>
+
+{{ c.identity_sheet() }}
+{% endblock %}
+
+{% block scripts %}
+<script src="{{ url_for('static', filename='web/support.js') }}" defer></script>
+{% endblock %}

@@ -154,6 +154,16 @@ def _migrate(conn):
     if "origin" not in cols:
         conn.execute("ALTER TABLE conversations ADD COLUMN origin TEXT DEFAULT 'live'")
         conn.commit()
+    # Human-facing ticket id (SPEC-08 §3.5) -- "PR-XXXXX" base32, shown on the chat
+    # escalation card and (later) quoted back by players. NULL for rows that predate
+    # it; only chat escalations mint one today. Unique where set.
+    if "public_id" not in cols:
+        conn.execute("ALTER TABLE conversations ADD COLUMN public_id TEXT")
+        conn.execute(
+            "CREATE UNIQUE INDEX IF NOT EXISTS uq_conversations_public_id "
+            "ON conversations(public_id) WHERE public_id IS NOT NULL"
+        )
+        conn.commit()
 
     msg_cols = {row["name"] for row in conn.execute("PRAGMA table_info(messages)").fetchall()}
     if "author_name" not in msg_cols:
@@ -246,7 +256,99 @@ def _migrate(conn):
         CREATE UNIQUE INDEX IF NOT EXISTS uq_send_once
             ON suggestion_actions(suggestion_id)
             WHERE action_type = 'send' AND status = 'done';
+
+        -- SPEC-08 §5 -- shadow chat agent storage. Every session persists
+        -- (shadow=1) for training/exploit review; chat rows are EXCLUDED from
+        -- metrics_daily (the chat engine never calls bump_metric) and from the
+        -- tone corpus (explicit source != 'chat' guard in app/tone.py).
+        -- meta_json holds small per-session runtime flags (degraded mode, pending
+        -- CSAT/clarify state) that aren't worth their own columns.
+        CREATE TABLE IF NOT EXISTS chat_sessions (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            created_at TEXT DEFAULT (datetime('now')),
+            last_activity_at TEXT DEFAULT (datetime('now')),
+            state TEXT NOT NULL DEFAULT 'ASK_GAME',  -- ASK_GAME|ASK_SID|CONFIRM_NAME|ISSUE_LOOP|RESOLVED|ESCALATED|EXPIRED|ENDED
+            game_choice TEXT,
+            sid TEXT,
+            player_name TEXT,
+            mongo_user_id TEXT,
+            shadow INTEGER NOT NULL DEFAULT 1,
+            tier2_used INTEGER NOT NULL DEFAULT 0,
+            msg_count INTEGER NOT NULL DEFAULT 0,
+            sid_attempts INTEGER NOT NULL DEFAULT 0,
+            image_attempts INTEGER NOT NULL DEFAULT 0,
+            strikes INTEGER NOT NULL DEFAULT 0,
+            escalated_conversation_id INTEGER REFERENCES conversations(id),
+            ended_at TEXT,
+            end_reason TEXT,                 -- resolved|escalated|timeout|manual|strikes|msg_budget
+            meta_json TEXT DEFAULT '{}'
+        );
+
+        CREATE TABLE IF NOT EXISTS chat_messages (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            session_id INTEGER NOT NULL REFERENCES chat_sessions(id),
+            role TEXT NOT NULL,              -- user | bot | system
+            type TEXT NOT NULL DEFAULT 'text',  -- text|chips|context_card|recognition|ban_card|escalation_card|csat|system
+            content TEXT NOT NULL,
+            meta_json TEXT DEFAULT '{}',
+            created_at TEXT DEFAULT (datetime('now'))
+        );
+        CREATE INDEX IF NOT EXISTS idx_chat_messages_session ON chat_messages(session_id);
+
+        CREATE TABLE IF NOT EXISTS chat_usage (
+            day TEXT PRIMARY KEY,
+            tier2_calls INTEGER DEFAULT 0,
+            sessions INTEGER DEFAULT 0,
+            escalations INTEGER DEFAULT 0
+        );
         """
+    )
+    conn.commit()
+    _seed_ban_responses(conn)
+
+
+# Approved-message set for the chat agent's ban/appeal path (SPEC-08 §3.3): the bot
+# may ONLY reply to a banned player with one of these -- never a generated answer,
+# never a promise. Seeded into the existing `canned` table (its schema has no
+# category column, so the category lives as a 'ban_response:' trigger_text prefix --
+# same table, greppable, editable in SupportKB). Deliberately left WITHOUT an
+# embedding so they can never be picked up as a Tier-0 canned match by
+# vectorstore.search (both the vec0 path and the brute-force path skip rows with a
+# NULL embedding).
+_BAN_RESPONSE_SEEDS = [
+    ("ban_response: appeal received",
+     "Thanks for letting me know — I understand account restrictions are stressful. "
+     "I've logged your appeal for the Fair Play team to review. They look at every "
+     "case individually and will follow up; I can't reverse or promise anything "
+     "myself, but your report is now in the queue."),
+    ("ban_response: why was I banned",
+     "I can see there's a restriction on this account. I don't have the full "
+     "moderation notes here, but bans are applied after our Fair Play checks. "
+     "I've flagged your account for a human review so the team can take a closer "
+     "look and get back to you with specifics."),
+    ("ban_response: says it wasn't them",
+     "I hear you — if you believe this was a mistake or someone else accessed your "
+     "account, that's exactly what the review team needs to know. I've noted it on "
+     "your case. Please don't share your account with anyone in the meantime, and "
+     "the team will follow up after reviewing the activity."),
+    ("ban_response: chat restriction",
+     "It looks like the restriction on this account affects chat. These are "
+     "usually temporary and are reviewed by the team. I've added your message to "
+     "the case so a human can double-check it — thanks for your patience."),
+]
+
+
+def _seed_ban_responses(conn):
+    """Idempotent: inserts the 4 draft ban replies once, ever. The team reviews /
+    edits them in SupportKB (they're normal canned rows); re-running migrations
+    never duplicates or overwrites their edits."""
+    n = conn.execute(
+        "SELECT COUNT(*) AS n FROM canned WHERE trigger_text LIKE 'ban_response:%'"
+    ).fetchone()["n"]
+    if n:
+        return
+    conn.executemany(
+        "INSERT INTO canned (trigger_text, answer) VALUES (?, ?)", _BAN_RESPONSE_SEEDS
     )
     conn.commit()
 

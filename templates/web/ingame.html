@@ -1,0 +1,35 @@
+{# =============================================================================
+   templates/web/ingame.html — 5.6 /ingame deeplink landing
+   Never an error page. Valid token → server 302s to /chat before this renders.
+   This template is served ONLY on invalid/expired token: 300ms brand flash, then
+   the identity sheet opens pre-filled with any SID from ctx.
+   Context: prefill_sid (may be '')
+============================================================================= #}
+{% extends 'web/base.html' %}
+{% import 'web/_components.html' as c with context %}
+{% block title %}Prime Rush Support{% endblock %}
+{% block header %}{% endblock %}{# no chrome during flash #}
+
+{% block body %}
+<div class="flash" id="ingame-flash">
+  <svg width="56" height="63" viewBox="0 0 24 27" fill="none" aria-label="Loading">
+    <path d="M12 1 22 6.75V20.25L12 26 2 20.25V6.75L12 1Z" stroke="currentColor" stroke-width="1.5"/>
+  </svg>
+</div>
+
+{{ c.identity_sheet(headline_key='identity.headline_confirm', prefill_sid=prefill_sid) }}
+{% endblock %}
+
+{% block scripts %}
+<script src="{{ url_for('static', filename='web/support.js') }}" defer></script>
+<script>
+  /* invalid/expired token path: brief flash, then reveal identity sheet */
+  document.addEventListener('DOMContentLoaded', function(){
+    setTimeout(function(){
+      document.getElementById('ingame-flash').classList.add('hidden');
+      var scrim = document.getElementById('identity-sheet');
+      if (scrim) { scrim.classList.remove('hidden'); scrim.removeAttribute('hidden'); }
+    }, 300);
+  });
+</script>
+{% endblock %}
