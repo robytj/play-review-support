@@ -208,7 +208,9 @@ def test_purchase_intent_answers_from_transactions(issue_session, say, known_pla
     sid = issue_session()
     out = say(sid, "Where are my purchases? I bought gems last week")
     text = bot_text(out)
-    assert "3 real-money purchase(s)" in text and "GooglePlay" in text
+    assert "3 purchase(s)" in text and "GooglePlay" in text
+    assert "completed successfully" in text          # completed-only framing
+    assert "isn't listed here" in text               # charged-but-missing -> escalate
     assert "2026-06-20" in text
     assert any(m["type"] == "csat" for m in out["messages"])
 
