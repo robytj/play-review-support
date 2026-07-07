@@ -15,7 +15,7 @@ from datetime import date, timedelta
 
 from fastapi import APIRouter, Depends, HTTPException, Header
 
-from app import db, embeddings, vectorstore, config, llm, tone, discord_send
+from app import db, embeddings, vectorstore, config, llm, tone, discord_send, outreach, ticketing
 
 router = APIRouter(prefix="/api/dashboard")
 
@@ -109,13 +109,25 @@ def conversation_detail(conversation_id: int):
     return {"conversation": _enrich(dict(convo)), "messages": [dict(m) for m in messages]}
 
 
+def _staff_actor(x_staff_email: str = Header(default="", alias="X-Staff-Email")) -> str:
+    """SPEC-09 §6 staff identity: the responder proxy forwards the logged-in
+    user's Google email as X-Staff-Email on every ticketing call; SupportBot
+    records it as the audit-log actor. Absent header -> 'system'."""
+    return (x_staff_email or "").strip().lower() or "system"
+
+
 @router.post("/conversations/{conversation_id}/resolve", dependencies=[Depends(require_service_key)])
-def resolve_conversation(conversation_id: int):
+def resolve_conversation(conversation_id: int, actor: str = Depends(_staff_actor)):
     with db.tx() as conn:
-        conn.execute(
+        row = conn.execute("SELECT status FROM conversations WHERE id = ?",
+                           (conversation_id,)).fetchone()
+        cur = conn.execute(
             "UPDATE conversations SET status='resolved', updated_at=datetime('now') WHERE id = ?",
             (conversation_id,),
         )
+        if cur.rowcount and row and row["status"] != "resolved":
+            ticketing.add_event(conn, conversation_id, actor, "status",
+                                {"from": row["status"], "to": "resolved"})
     return {"ok": True}
 
 
@@ -137,6 +149,300 @@ def queue():
         """
     ).fetchall()
     return [_enrich(dict(r)) for r in rows]
+
+
+# ---------------------------------------------------------------- ticketing (SPEC-09) --
+# Ticket Review as a full ticketing system: priorities, assignees, SLA, status
+# workflow, audit events, recommendations, (inert) outreach. Storage lives on
+# the conversations table + ticket_events; helpers in app/ticketing.py.
+
+_TICKET_COLS = """
+    c.id, c.public_id, c.channel, c.external_id, c.origin, c.status, c.context,
+    c.player_id, c.sid_source, c.created_at, c.updated_at,
+    COALESCE(c.priority, 'P3') AS priority, c.assignee, c.due_at,
+    c.first_human_response_at, c.closed_at
+"""
+
+
+def _ticket_row(d: dict) -> dict:
+    """Shared per-row enrichment: display status (legacy escalated/paused map),
+    overdue/due seconds from the SQL fragments, deep links."""
+    d["ticket_status"] = ticketing.display_status(d.get("status"))
+    d["overdue"] = bool(d.get("overdue"))
+    d["admin_url"] = _admin_url(d.get("player_id"))
+    d["discord_url"] = _discord_url(d.get("channel"), d.get("external_id"))
+    return d
+
+
+@router.get("/tickets", dependencies=[Depends(require_service_key)])
+def list_tickets(status: str | None = None, priority: str | None = None,
+                 assignee: str | None = None, channel: str | None = None,
+                 overdue: bool | None = None, q: str | None = None,
+                 limit: int = 100, offset: int = 0):
+    """SPEC-09 §6 rich ticket list, queue-ordered (overdue first, then priority,
+    then due_at) with per-row SLA state. Runs the lazy sla_breach sweep first.
+    `status` filters on the DISPLAY workflow value (open matches legacy
+    'escalated' rows, waiting_player matches legacy 'paused')."""
+    with db.tx() as c:
+        ticketing.sweep_sla_breaches(c)
+    conn = db.get_conn()
+    where, params = [], []
+    if status:
+        raws = [status] + [k for k, v in ticketing.LEGACY_STATUS_MAP.items() if v == status]
+        where.append(f"c.status IN ({','.join('?' * len(raws))})")
+        params.extend(raws)
+    if priority:
+        if priority not in ticketing.PRIORITIES:
+            raise HTTPException(400, f"priority must be one of {list(ticketing.PRIORITIES)}")
+        where.append("COALESCE(c.priority, 'P3') = ?")
+        params.append(priority)
+    if assignee is not None:
+        if assignee in ("", "unassigned"):
+            where.append("(c.assignee IS NULL OR c.assignee = '')")
+        else:
+            where.append("c.assignee = ?")
+            params.append(assignee)
+    if channel:
+        where.append("c.channel = ?")
+        params.append(channel)
+    if overdue:
+        where.append(ticketing.OVERDUE_SQL)
+    if q:
+        like = f"%{q}%"
+        where.append("(c.public_id LIKE ? OR c.player_id LIKE ? OR c.assignee LIKE ? OR EXISTS "
+                     "(SELECT 1 FROM suggestions s WHERE s.conversation_id = c.id AND s.question LIKE ?))")
+        params.extend([like, like, like, like])
+    where_sql = ("WHERE " + " AND ".join(where)) if where else ""
+    total = conn.execute(
+        f"SELECT COUNT(*) AS n FROM conversations c {where_sql}", params
+    ).fetchone()["n"]
+    rows = conn.execute(
+        f"""
+        SELECT {_TICKET_COLS},
+               {ticketing.OVERDUE_SQL} AS overdue,
+               {ticketing.DUE_IN_SQL} AS due_in_seconds,
+               (SELECT text FROM messages WHERE conversation_id = c.id ORDER BY id DESC LIMIT 1) AS last_text,
+               (SELECT s.question FROM suggestions s WHERE s.conversation_id = c.id
+                ORDER BY s.id DESC LIMIT 1) AS question,
+               (SELECT s.id FROM suggestions s WHERE s.conversation_id = c.id
+                ORDER BY s.id DESC LIMIT 1) AS suggestion_id
+        FROM conversations c
+        {where_sql}
+        {ticketing.QUEUE_ORDER_SQL}
+        LIMIT ? OFFSET ?
+        """,
+        [*params, limit, offset],
+    ).fetchall()
+    return {"tickets": [_ticket_row(dict(r)) for r in rows], "total": total,
+            "limit": limit, "offset": offset}
+
+
+@router.patch("/conversations/{conversation_id}", dependencies=[Depends(require_service_key)])
+def patch_conversation(conversation_id: int, payload: dict, actor: str = Depends(_staff_actor)):
+    """SPEC-09 §6: {status?, priority?, assignee?}. Transitions are unrestricted
+    (small team) except `closed`, which is staff-only; every change is logged
+    with actor. Priority changes recompute due_at only while no first human
+    response has been recorded."""
+    allowed = {"status", "priority", "assignee"}
+    unknown = set(payload) - allowed
+    if unknown:
+        raise HTTPException(400, f"unknown fields {sorted(unknown)}; allowed: {sorted(allowed)}")
+    if not payload:
+        raise HTTPException(400, "nothing to update (status/priority/assignee)")
+    conn = db.get_conn()
+    row = conn.execute("SELECT * FROM conversations WHERE id = ?", (conversation_id,)).fetchone()
+    if not row:
+        raise HTTPException(404, "conversation not found")
+    old = dict(row)
+
+    if "status" in payload:
+        new_status = payload["status"]
+        if new_status not in ticketing.STATUSES:
+            raise HTTPException(400, f"status must be one of {list(ticketing.STATUSES)}")
+        if new_status == "closed" and actor in ("system", "bot"):
+            raise HTTPException(403, "closed is staff-only (X-Staff-Email required)")
+    if "priority" in payload and payload["priority"] not in ticketing.PRIORITIES:
+        raise HTTPException(400, f"priority must be one of {list(ticketing.PRIORITIES)}")
+
+    with db.tx() as c:
+        if "status" in payload and payload["status"] != old["status"]:
+            new_status = payload["status"]
+            c.execute("UPDATE conversations SET status = ? WHERE id = ?",
+                      (new_status, conversation_id))
+            if new_status == "closed":
+                c.execute("UPDATE conversations SET closed_at = datetime('now') WHERE id = ?",
+                          (conversation_id,))
+            elif old["closed_at"]:
+                # reopened -- a stale closed_at would misreport the ticket
+                c.execute("UPDATE conversations SET closed_at = NULL WHERE id = ?",
+                          (conversation_id,))
+            ticketing.add_event(c, conversation_id, actor, "status",
+                                {"from": old["status"], "to": new_status})
+        if "priority" in payload and payload["priority"] != (old["priority"] or "P3"):
+            new_priority = payload["priority"]
+            c.execute("UPDATE conversations SET priority = ? WHERE id = ?",
+                      (new_priority, conversation_id))
+            detail = {"from": old["priority"] or "P3", "to": new_priority}
+            if not old["first_human_response_at"]:
+                # SPEC-09 §3: due_at recomputed on priority change only pre-first-response
+                ticketing.recompute_due_at(c, conversation_id, new_priority)
+                detail["due_at_recomputed"] = True
+            ticketing.add_event(c, conversation_id, actor, "priority", detail)
+        if "assignee" in payload and (payload["assignee"] or None) != (old["assignee"] or None):
+            new_assignee = (payload["assignee"] or "").strip().lower() or None
+            c.execute("UPDATE conversations SET assignee = ? WHERE id = ?",
+                      (new_assignee, conversation_id))
+            ticketing.add_event(c, conversation_id, actor, "assignee",
+                                {"from": old["assignee"], "to": new_assignee})
+        c.execute("UPDATE conversations SET updated_at = datetime('now') WHERE id = ?",
+                  (conversation_id,))
+
+    fresh = db.get_conn().execute(
+        f"SELECT {_TICKET_COLS}, {ticketing.OVERDUE_SQL} AS overdue, "
+        f"{ticketing.DUE_IN_SQL} AS due_in_seconds FROM conversations c WHERE c.id = ?",
+        (conversation_id,),
+    ).fetchone()
+    return {"ok": True, "ticket": _ticket_row(dict(fresh))}
+
+
+@router.post("/conversations/{conversation_id}/notes", dependencies=[Depends(require_service_key)])
+def add_note(conversation_id: int, payload: dict, actor: str = Depends(_staff_actor)):
+    """Notes ARE events (SPEC-09 §1): one ticket_events row with event='note',
+    text in detail_json. Optional {notify: true} marks it as a player-visible
+    response and stamps first_human_response_at (first time only)."""
+    text = (payload.get("text") or "").strip()
+    if not text:
+        raise HTTPException(400, "text required")
+    notify = bool(payload.get("notify"))
+    conn = db.get_conn()
+    if not conn.execute("SELECT 1 FROM conversations WHERE id = ?", (conversation_id,)).fetchone():
+        raise HTTPException(404, "conversation not found")
+    with db.tx() as c:
+        ticketing.add_event(c, conversation_id, actor, "note",
+                            {"text": text, "notify": notify})
+        if notify:
+            ticketing.stamp_first_human_response(c, conversation_id)
+        c.execute("UPDATE conversations SET updated_at = datetime('now') WHERE id = ?",
+                  (conversation_id,))
+    return {"ok": True}
+
+
+@router.get("/conversations/{conversation_id}/events", dependencies=[Depends(require_service_key)])
+def list_events(conversation_id: int):
+    """The audit timeline (SPEC-09 §6), oldest first. detail_json is parsed for
+    the client; no events are backfilled for pre-SPEC-09 rows."""
+    conn = db.get_conn()
+    if not conn.execute("SELECT 1 FROM conversations WHERE id = ?", (conversation_id,)).fetchone():
+        raise HTTPException(404, "conversation not found")
+    rows = conn.execute(
+        "SELECT id, actor, event, detail_json, created_at FROM ticket_events "
+        "WHERE conversation_id = ? ORDER BY id ASC", (conversation_id,)
+    ).fetchall()
+    events = []
+    for r in rows:
+        d = dict(r)
+        try:
+            d["detail"] = json.loads(d.pop("detail_json") or "{}")
+        except (ValueError, TypeError):
+            d["detail"] = {}
+        events.append(d)
+    return {"conversation_id": conversation_id, "events": events}
+
+
+@router.get("/conversations/{conversation_id}/recommendations", dependencies=[Depends(require_service_key)])
+def recommendations(conversation_id: int):
+    """SPEC-09 §4 -- deterministic, $0 staff guidance:
+    1. kb_matches: top-3 published articles by embedding similarity (skipped ->
+       [] when embeddings are on the non-semantic fallback);
+    2. actions: keyword/context rule table from PLAYER_DATA_MAP §5;
+    3. playbook: highest-similarity playbook-tagged article ('suggested reply
+       basis'), None when embeddings are unavailable."""
+    conn = db.get_conn()
+    convo = conn.execute("SELECT * FROM conversations WHERE id = ?", (conversation_id,)).fetchone()
+    if not convo:
+        raise HTTPException(404, "conversation not found")
+    srow = conn.execute(
+        "SELECT question FROM suggestions WHERE conversation_id = ? ORDER BY id DESC LIMIT 1",
+        (conversation_id,),
+    ).fetchone()
+    question = srow["question"] if srow else None
+    if not question:
+        mrow = conn.execute(
+            "SELECT text FROM messages WHERE conversation_id = ? AND role = 'user' "
+            "ORDER BY id DESC LIMIT 1", (conversation_id,)).fetchone()
+        question = mrow["text"] if mrow else ""
+    try:
+        context = json.loads(convo["context"] or "{}")
+    except (ValueError, TypeError):
+        context = {}
+
+    admin_url = _admin_url(convo["player_id"])
+    actions = ticketing.build_recommendations(question, convo["player_id"], context, admin_url)
+
+    kb_matches, playbook = [], None
+    if question and not embeddings.is_using_fallback():
+        try:
+            q_vec = embeddings.embed(question)
+            for row_id, sim in vectorstore.search("kb_articles", q_vec, top_k=3,
+                                                  where="status = 'published'"):
+                art = conn.execute(
+                    "SELECT id, title, category, tags FROM kb_articles WHERE id = ?",
+                    (row_id,)).fetchone()
+                if art:
+                    kb_matches.append({**dict(art), "similarity": round(float(sim), 3)})
+            hits = vectorstore.search("kb_articles", q_vec, top_k=1,
+                                      where="status = 'published' AND tags LIKE '%playbook%'")
+            if hits:
+                art = conn.execute(
+                    "SELECT id, title, answer, category FROM kb_articles WHERE id = ?",
+                    (hits[0][0],)).fetchone()
+                if art:
+                    playbook = {**dict(art), "similarity": round(float(hits[0][1]), 3)}
+        except Exception as e:
+            # degrade, never 500 -- recommendations are advisory (acceptance #4)
+            print(f"[warn] recommendations: KB match failed ({e!r})")
+            kb_matches, playbook = [], None
+
+    return {"conversation_id": conversation_id, "question": question,
+            "kb_matches": kb_matches, "actions": actions, "playbook": playbook,
+            "embeddings_available": not embeddings.is_using_fallback()}
+
+
+@router.get("/outreach/status", dependencies=[Depends(require_service_key)])
+def outreach_status():
+    """Why the outreach buttons are disabled (SPEC-09 §5) -- toggle + env state."""
+    return outreach.status()
+
+
+@router.post("/conversations/{conversation_id}/outreach/inbox", dependencies=[Depends(require_service_key)])
+def outreach_inbox(conversation_id: int, payload: dict, actor: str = Depends(_staff_actor)):
+    """SPEC-09 §5 in-game inbox outreach -- wired but inert: refuses (403) until
+    the outreach_enabled toggle AND the INDUS_* env AND the confirmed IndusAPI
+    contract all exist. Every attempt, refused or not, logs one outreach_inbox
+    event (title + first 80 chars of the body only, never the full text)."""
+    title = (payload.get("title") or "").strip()
+    body = (payload.get("body") or "").strip()
+    if not title or not body:
+        raise HTTPException(400, "title and body required")
+    conn = db.get_conn()
+    convo = conn.execute("SELECT player_id FROM conversations WHERE id = ?",
+                         (conversation_id,)).fetchone()
+    if not convo:
+        raise HTTPException(404, "conversation not found")
+    sid = (convo["player_id"] or "").strip()
+    if not sid:
+        raise HTTPException(428, "no resolved SID on this ticket -- outreach needs a player")
+
+    result = outreach.send_inbox_message(sid, title, body, actor)
+    with db.tx() as c:
+        ticketing.add_event(c, conversation_id, actor, "outreach_inbox", {
+            "sid": sid, "sent": bool(result.get("sent")),
+            "refused_reason": result.get("reason"),
+            "title": title[:120], "body_preview": body[:80],
+        })
+    if not result.get("sent"):
+        raise HTTPException(403, f"outreach refused: {result.get('reason')}")
+    return {"ok": True, "sent": True}
 
 
 # -------------------------------------------------------------------- suggestions --
@@ -200,7 +506,15 @@ def list_suggestions(source: str | None = None, origin: str | None = None,
     """Joined conversations + suggestions rows for the Ticket Review grid.
     Filters: source (discord|freshdesk|email), origin (backfill|live), tier, status.
     Shows only the LATEST suggestion per ticket (superseded re-run rows stay in the
-    DB as training data but are hidden here, so the grid is one row per ticket)."""
+    DB as training data but are hidden here, so the grid is one row per ticket).
+
+    SPEC-09: rows additionally carry the conversation's ticketing state (priority /
+    assignee / ticket_status / due_at / overdue / due_in_seconds / public_id) so the
+    Ticket Review grid can render pills + SLA cells without a second request. All
+    additive -- existing consumers keep their shape. Listing also runs the lazy
+    sla_breach sweep (SPEC-09 §3 'on list queries')."""
+    with db.tx() as c:
+        ticketing.sweep_sla_breaches(c)
     conn = db.get_conn()
     # restrict to the newest suggestion per conversation
     where = ["s.id = (SELECT MAX(s2.id) FROM suggestions s2 WHERE s2.conversation_id = s.conversation_id)"]
@@ -221,7 +535,12 @@ def list_suggestions(source: str | None = None, origin: str | None = None,
                s.edited_answer, s.tier, s.staff_answer, s.status, s.approved_at,
                s.sent_at, s.created_at, s.supersedes_id,
                c.channel, c.external_id, c.origin, c.player_id, c.context,
-               c.created_at AS convo_created_at
+               c.created_at AS convo_created_at,
+               c.status AS convo_status, COALESCE(c.priority, 'P3') AS priority,
+               c.assignee, c.due_at, c.first_human_response_at, c.closed_at,
+               c.public_id,
+               {ticketing.OVERDUE_SQL} AS overdue,
+               {ticketing.DUE_IN_SQL} AS due_in_seconds
         FROM suggestions s JOIN conversations c ON c.id = s.conversation_id
         {where_sql}
         ORDER BY s.created_at DESC
@@ -235,6 +554,8 @@ def list_suggestions(source: str | None = None, origin: str | None = None,
         d["admin_url"] = _admin_url(d.get("player_id"))
         d["discord_url"] = _discord_url(d.get("channel"), d.get("external_id"))
         d["final_answer"] = d.get("edited_answer") or d.get("suggested_answer")
+        d["ticket_status"] = ticketing.display_status(d.get("convo_status"))
+        d["overdue"] = bool(d.get("overdue"))
         # To / From / Date columns (§4A #1, #2, #4)
         d.update(_ticket_meta(d.get("source"), d.get("context"),
                               d.get("external_id"), d.get("convo_created_at")))
@@ -262,16 +583,25 @@ def edit_suggestion(suggestion_id: int, payload: dict):
 
 
 @router.post("/suggestions/{suggestion_id}/approve", dependencies=[Depends(require_service_key)])
-def approve_suggestion(suggestion_id: int):
+def approve_suggestion(suggestion_id: int, actor: str = Depends(_staff_actor)):
     """Marks 'this is the answer I'd have wanted'. Does NOT send (constraint 5) --
     for backfill rows it just feeds Phase 5 KB enrichment + Phase 7 tone training;
-    sending is a separate, Phase-6, live-only, per-message action."""
+    sending is a separate, Phase-6, live-only, per-message action.
+
+    SPEC-09 §6: approving counts as the first staff response on the ticket --
+    stamps first_human_response_at (first time only) and logs a reply_sent event."""
     with db.tx() as conn:
         cur = conn.execute(
             "UPDATE suggestions SET status='approved', approved_at=datetime('now') WHERE id = ?",
             (suggestion_id,))
         if cur.rowcount == 0:
             raise HTTPException(404, "suggestion not found")
+        convo_id = conn.execute(
+            "SELECT conversation_id FROM suggestions WHERE id = ?", (suggestion_id,)
+        ).fetchone()["conversation_id"]
+        ticketing.stamp_first_human_response(conn, convo_id)
+        ticketing.add_event(conn, convo_id, actor, "reply_sent",
+                            {"suggestion_id": suggestion_id, "via": "approve"})
     return {"ok": True}
 
 
@@ -351,7 +681,7 @@ def translate_suggestion(suggestion_id: int, target: str = "en"):
 
 
 @router.post("/suggestions/{suggestion_id}/send", dependencies=[Depends(require_service_key)])
-def send_suggestion(suggestion_id: int):
+def send_suggestion(suggestion_id: int, actor: str = Depends(_staff_actor)):
     """Phase 6 — the ONLY Discord-write path. Posts the approved reply to the live ticket
     channel. Every guard below must pass or it refuses (4xx); nothing auto-sends and it's
     idempotent (a completed send is recorded in suggestion_actions with a unique index, so
@@ -429,6 +759,12 @@ def send_suggestion(suggestion_id: int):
             "UPDATE suggestion_actions SET payload_json=?, executed_at=datetime('now') "
             "WHERE suggestion_id=? AND action_type='send'",
             (json.dumps({"channel_id": d["external_id"], "discord_message_id": message_id}), suggestion_id))
+        # SPEC-09 §6: the first staff reply via the approve/send path stamps
+        # first_human_response_at and logs a reply_sent audit event.
+        ticketing.stamp_first_human_response(c, d["conversation_id"])
+        ticketing.add_event(c, d["conversation_id"], actor, "reply_sent",
+                            {"suggestion_id": suggestion_id, "via": "send",
+                             "discord_message_id": message_id})
     return {"ok": True, "sent": True, "discord_message_id": message_id}
 
 
@@ -729,7 +1065,8 @@ def post_settings(payload: dict):
     sensitive_keywords = payload.get("sensitive_keywords")
     shadow_mode = payload.get("shadow_mode")
     chat_enabled = payload.get("chat_enabled")  # shadow chat kill switch (SPEC-08 §8)
+    outreach_enabled = payload.get("outreach_enabled")  # SPEC-09 §5 outreach toggle
     return config.write_settings(
         thresholds=thresholds, sensitive_keywords=sensitive_keywords, shadow_mode=shadow_mode,
-        chat_enabled=chat_enabled,
+        chat_enabled=chat_enabled, outreach_enabled=outreach_enabled,
     )

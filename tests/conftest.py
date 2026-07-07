@@ -31,9 +31,9 @@ from app.player_context import PlayerContext  # noqa: E402
 AUTH = {"Authorization": "Bearer test-key"}
 
 _TABLES = ("chat_messages", "chat_sessions", "chat_usage", "suggestion_actions",
-           "suggestions", "feedback", "messages", "conversations", "metrics_daily",
-           "kb_translations", "ticket_translations", "kb_articles", "answer_cache",
-           "canned", "tone_cache")
+           "suggestions", "feedback", "messages", "ticket_events", "conversations",
+           "metrics_daily", "kb_translations", "ticket_translations", "kb_articles",
+           "answer_cache", "canned", "tone_cache")
 
 
 @pytest.fixture(autouse=True)

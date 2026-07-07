@@ -207,4 +207,12 @@ def get_or_create_conversation(channel: str, external_id: str, context: str = ""
             "INSERT INTO conversations (channel, external_id, context, player_id) VALUES (?, ?, ?, ?)",
             (channel, external_id, context, player_id),
         )
-        return cur.lastrowid
+        conversation_id = cur.lastrowid
+        # SPEC-09 §1/§3: every new live ticket gets a created event + default
+        # priority/SLA due_at. No question text exists yet on this path (the
+        # first message lands right after), so the keyword rules only see the
+        # intake context; staff can re-prioritize (logged) any time.
+        from app import ticketing  # local import: ticketing is leaf-level, keep router's import graph flat
+        ticketing.stamp_created(c, conversation_id, actor="bot",
+                                priority=ticketing.default_priority(context or ""))
+        return conversation_id

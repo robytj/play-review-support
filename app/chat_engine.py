@@ -23,7 +23,8 @@ import re
 import secrets
 from datetime import date
 
-from app import config, db, embeddings, llm, player_context, router, scope_gate, vectorstore
+from app import (config, db, embeddings, llm, player_context, router, scope_gate,
+                 ticketing, vectorstore)
 
 # ------------------------------------------------------------------- constants --
 
@@ -854,6 +855,23 @@ def _escalate(session, question: str, reason: str, end_reason: str = "escalated"
             "tier, retrieved_chunks, status) VALUES (?, 'chat', ?, ?, 3, '[]', 'pending')",
             (conversation_id, full_question, router.HOLDING_REPLY),
         )
+        # SPEC-09 §1: chat escalations are first-class tickets -- write the
+        # created (priority + SLA due_at) and escalated audit events with the
+        # chat context. Priority inherits P2 when verified purchase/ban context
+        # is present, else the keyword/default rules (§3).
+        priority = ticketing.default_priority(
+            question,
+            has_purchase_context=bool(ctx and ctx.transactions
+                                      and ctx.transactions.get("real_money_count")),
+            has_ban_context=bool(ctx and (ctx.is_banned or ctx.chat_banned)),
+        )
+        ticketing.stamp_created(c, conversation_id, actor="bot", priority=priority,
+                                detail={"source": "chat", "chat_session_id": sid,
+                                        "public_id": public_id})
+        ticketing.add_event(c, conversation_id, "bot", "escalated",
+                            {"reason": reason, "chat_session_id": sid,
+                             "sid": session["sid"], "public_id": public_id,
+                             "summary": " | ".join(summary_bits)})
     _bump_usage("escalations")
     _update(sid, state="ESCALATED", escalated_conversation_id=conversation_id,
             ended_at=_now(), end_reason=end_reason)

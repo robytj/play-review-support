@@ -66,6 +66,22 @@ def _apply(cfg: dict):
     g["SCOPE_GATE_MIN_SCORE"] = float(sg.get("min_score", 0.35))
     g["SCOPE_GATE_STRIKE_LIMIT"] = int(sg.get("strike_limit", 3))
 
+    # SPEC-09 §3 -- SLA policy: hours to first human response per priority.
+    # .get() defaults keep an older config.yaml (without the block) booting fine.
+    sla = cfg.get("sla", {}) or {}
+    g["SLA_HOURS"] = {
+        "P1": int(sla.get("P1", 4)),
+        "P2": int(sla.get("P2", 12)),
+        "P3": int(sla.get("P3", 24)),
+        "P4": int(sla.get("P4", 72)),
+    }
+
+    # SPEC-09 §5 -- player-outreach runtime toggle (Support Settings, default
+    # OFF). Same hot-reload rule as chat_enabled/shadow_mode above; and even ON,
+    # app/outreach.py still refuses until the INDUS_* env exists.
+    outreach_cfg = cfg.get("outreach", {}) or {}
+    g["OUTREACH_ENABLED"] = bool(outreach_cfg.get("enabled", False))
+
 
 def reload():
     """Re-reads config.yaml from disk and updates the live module globals.
@@ -86,11 +102,13 @@ def get_thresholds_dict() -> dict:
         "shadow_mode": DISCORD_SHADOW_MODE,
         "chat_enabled": CHAT_ENABLED,
         "tau_clarify": TAU_CLARIFY,
+        "sla_hours": SLA_HOURS,
+        "outreach_enabled": OUTREACH_ENABLED,
     }
 
 
 def write_settings(thresholds: dict = None, sensitive_keywords: list = None, shadow_mode: bool = None,
-                   chat_enabled: bool = None):
+                   chat_enabled: bool = None, outreach_enabled: bool = None):
     """Used by POST /api/dashboard/settings. Rewrites config.yaml (preserving
     everything else) then reload()s so it takes effect immediately."""
     cfg = _load_yaml()
@@ -104,6 +122,10 @@ def write_settings(thresholds: dict = None, sensitive_keywords: list = None, sha
         # kill switch for the shadow chat agent (SPEC-08 §8) -- lives next to
         # shadow_mode so the Support Settings tab flips it live, no redeploy.
         cfg.setdefault("chat", {})["enabled"] = bool(chat_enabled)
+    if outreach_enabled is not None:
+        # SPEC-09 §5 player-outreach toggle -- default OFF; flipping it ON still
+        # sends nothing until the INDUS_* env + IndusAPI contract exist.
+        cfg.setdefault("outreach", {})["enabled"] = bool(outreach_enabled)
     with open(CONFIG_YAML_PATH, "w") as f:
         yaml.safe_dump(cfg, f, sort_keys=False)
     return reload()

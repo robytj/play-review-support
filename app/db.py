@@ -170,6 +170,13 @@ def _migrate(conn):
     if "sid_source" not in cols:
         conn.execute("ALTER TABLE conversations ADD COLUMN sid_source TEXT")
         conn.commit()
+    # SPEC-09 ticketing columns. NULL-friendly by design: existing rows stay
+    # untouched (NULL priority renders as P3, no due_at means never overdue, no
+    # events are backfilled) -- acceptance #1.
+    for col in ("priority", "assignee", "due_at", "first_human_response_at", "closed_at"):
+        if col not in cols:
+            conn.execute(f"ALTER TABLE conversations ADD COLUMN {col} TEXT")
+            conn.commit()
 
     msg_cols = {row["name"] for row in conn.execute("PRAGMA table_info(messages)").fetchall()}
     if "author_name" not in msg_cols:
@@ -307,6 +314,22 @@ def _migrate(conn):
             sessions INTEGER DEFAULT 0,
             escalations INTEGER DEFAULT 0
         );
+
+        -- SPEC-09 §1 -- the ticket audit log (mirrors the game admin's
+        -- remarks+audit model). Every ticket mutation writes exactly one row via
+        -- app/ticketing.add_event(); notes are events too (event='note', text in
+        -- detail_json). actor is the staff email forwarded by the responder proxy
+        -- (X-Staff-Email) or 'system'/'bot'.
+        CREATE TABLE IF NOT EXISTS ticket_events (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            conversation_id INTEGER NOT NULL REFERENCES conversations(id),
+            actor TEXT NOT NULL DEFAULT 'system',   -- staff email or 'system'/'bot'
+            event TEXT NOT NULL,   -- created|status|priority|assignee|note|escalated|
+                                   -- reply_sent|outreach_inbox|sla_breach
+            detail_json TEXT DEFAULT '',
+            created_at TEXT DEFAULT (datetime('now'))
+        );
+        CREATE INDEX IF NOT EXISTS idx_ticket_events_convo ON ticket_events(conversation_id);
         """
     )
     conn.commit()

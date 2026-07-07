@@ -39,3 +39,10 @@ scope_gate:
   enabled: true
   min_score: 0.35
   strike_limit: 3
+sla:
+  P1: 4
+  P2: 12
+  P3: 24
+  P4: 72
+outreach:
+  enabled: false
