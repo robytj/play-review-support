@@ -333,6 +333,14 @@ def get_session(session_id: int) -> dict:
     s = dict(session)
     s.pop("meta_json", None)  # internal runtime flags, not part of the API surface
     s["budget"] = budget_dict(session)
+    # live flag on the DETAIL response too -- the observer/takeover UI decides from
+    # this fetch, not the list (bug fix: it was list-only, so takeover never offered).
+    s["live"] = bool(db.get_conn().execute(
+        "SELECT (state NOT IN ({t}) AND last_activity_at >= datetime('now', ?)) AS live "
+        "FROM chat_sessions WHERE id = ?".format(
+            t=",".join(f"'{x}'" for x in sorted(TERMINAL_STATES))),
+        (f"-{LIVE_WINDOW_SECONDS} seconds", session_id),
+    ).fetchone()["live"])
     return {"session": s, "messages": [_msg_dict(r) for r in rows]}
 
 
@@ -349,10 +357,27 @@ def list_sessions(limit: int = 50, offset: int = 0) -> dict:
         (f"-{LIVE_WINDOW_SECONDS} seconds", limit, offset),
     ).fetchall()
     total = conn.execute("SELECT COUNT(*) AS n FROM chat_sessions").fetchone()["n"]
+    # Sidebar issue summaries: latest substantive player message per session
+    # (skips chip echoes / yes-no / SIDs; blob-clipped). One query for the page.
+    ids = [r["id"] for r in rows]
+    summaries: dict[int, str] = {}
+    if ids:
+        marks = ",".join("?" for _ in ids)
+        for m in conn.execute(
+            f"SELECT session_id, content FROM chat_messages WHERE session_id IN ({marks}) "
+            f"AND role = 'user' ORDER BY id ASC", ids,
+        ).fetchall():
+            text = (m["content"] or "").strip()
+            low = text.lower().rstrip("!.")
+            if (len(text) > 12 and low not in _YES and low not in _NO
+                    and not SID_TOKEN_RE.fullmatch(text.upper())
+                    and text not in GAME_CHIPS and not RATING_RE.match(text)):
+                summaries[m["session_id"]] = _clip(text, 64)  # last one wins
     sessions = []
     for r in rows:
         d = dict(r)
         d["live"] = bool(d["live"])  # player plausibly still in the tab -> takeover target
+        d["issue_summary"] = summaries.get(d["id"])
         sessions.append(d)
     return {"sessions": sessions, "total": total}
 
