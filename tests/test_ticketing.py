@@ -332,7 +332,7 @@ def test_outreach_status_and_guards(dash):
 def test_chat_escalation_writes_created_and_escalated_events(issue_session, say, known_player):
     sid = issue_session()
     out = say(sid, "I want to talk to a real person")
-    assert out["state"] == "ESCALATED"
+    assert out["state"] == "RATING"       # star-rating ask follows the card
     card = next(m for m in out["messages"] if m["type"] == "escalation_card")
     cid = card["meta"]["conversation_id"]
 

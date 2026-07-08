@@ -29,8 +29,8 @@ def test_chat_disabled_returns_503(client, monkeypatch):
 
 def test_create_session_shape(start):
     s = start()
-    assert set(s) == {"session_id", "state", "messages", "budget"}
-    assert s["state"] == "ASK_GAME"
+    assert set(s) == {"session_id", "state", "controller", "messages", "budget"}
+    assert s["state"] == "ASK_GAME" and s["controller"] == "bot"
     assert s["budget"] == {"tier2_used": 0, "tier2_limit": config.CHAT_TIER2_PER_SESSION,
                            "messages_used": 0,
                            "messages_limit": config.CHAT_MESSAGES_PER_SESSION}

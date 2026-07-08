@@ -26,7 +26,8 @@ DEFAULT_PRIORITY = "P3"
 STATUSES = ("open", "in_progress", "waiting_player", "resolved", "closed")
 LEGACY_STATUS_MAP = {"escalated": "open", "paused": "waiting_player"}
 EVENTS = ("created", "status", "priority", "assignee", "note", "escalated",
-          "reply_sent", "outreach_inbox", "sla_breach")
+          "reply_sent", "outreach_inbox", "sla_breach",
+          "takeover", "release", "rating")  # live chat takeover + end-of-chat stars
 
 # Category cues for default priority + the recommendations rule table (SPEC-09 §3/§4).
 # Kept keyword-based on purpose: deterministic, $0, and they keep working when

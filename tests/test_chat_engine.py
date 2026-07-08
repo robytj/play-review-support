@@ -63,11 +63,18 @@ def test_full_happy_path(client, start, say, known_player, monkeypatch):
     assert out["budget"]["tier2_used"] == 1
 
     out = say(sid, "Yes")
+    assert out["state"] == "RATING"                        # star rating before close
+    rate = next(m for m in out["messages"] if m["type"] == "rating")
+    assert rate["meta"]["chips"] == ["1", "2", "3", "4", "5"]
+    assert rate["meta"]["rating"] is True
+
+    out = say(sid, "5")
     assert out["state"] == "RESOLVED"
 
     conn = db.get_conn()
     row = conn.execute("SELECT * FROM chat_sessions WHERE id = ?", (sid,)).fetchone()
     assert row["shadow"] == 1 and row["end_reason"] == "resolved"
+    assert row["rating"] == 5
     # shadow guard: the whole session never touched metrics_daily
     assert conn.execute("SELECT COUNT(*) AS n FROM metrics_daily").fetchone()["n"] == 0
 
@@ -251,7 +258,7 @@ def test_tier2_budget_exhaustion_deflects_then_escalates(issue_session, say, kno
     assert out["budget"]["tier2_used"] == 2
     out = say(sid, "How do I change my nickname in the game?")  # budget gone
     assert len(calls) == 2                                # suggest NOT called again
-    assert out["state"] == "ESCALATED"
+    assert out["state"] == "RATING"                       # rating follows the card
     card = next(m for m in out["messages"] if m["type"] == "escalation_card")
     assert "tier-2 budget exhausted" in card["meta"]["reason"]
     usage = db.get_conn().execute("SELECT * FROM chat_usage").fetchone()
@@ -264,7 +271,8 @@ def test_daily_tier2_cap_forces_deflect_and_escalate(issue_session, say, known_p
                         lambda q: pytest.fail("daily cap must skip suggest()"))
     sid = issue_session()
     out = say(sid, "How do I change my nickname in the game?")
-    assert out["state"] == "ESCALATED"
+    assert out["state"] == "RATING"
+    assert any(m["type"] == "escalation_card" for m in out["messages"])
 
 
 def test_message_budget_escalates(issue_session, say, known_player, monkeypatch):
@@ -275,9 +283,12 @@ def test_message_budget_escalates(issue_session, say, known_player, monkeypatch)
     out = say(sid, "How do I update the game?")            # message 4: still allowed
     assert out["state"] == "ISSUE_LOOP"
     out = say(sid, "And my nickname, how do I change it?") # message 5 > 4 -> escalate
+    assert out["state"] == "RATING"
+    out = say(sid, "whatever, bye")                        # not a rating -> close, no nag
     assert out["state"] == "ESCALATED"
-    row = db.get_conn().execute("SELECT end_reason FROM chat_sessions WHERE id=?", (sid,)).fetchone()
-    assert row["end_reason"] == "msg_budget"
+    row = db.get_conn().execute("SELECT end_reason, rating FROM chat_sessions WHERE id=?",
+                                (sid,)).fetchone()
+    assert row["end_reason"] == "msg_budget" and row["rating"] is None
 
 
 def test_clarify_band_offers_chips_once(issue_session, say, known_player, monkeypatch):
@@ -323,7 +334,7 @@ def test_csat_no_offers_escalation_then_creates_ticket(issue_session, say, known
     out = say(sid, "No")                                   # CSAT: didn't solve it
     assert "raise this with the team" in bot_text(out)
     out = say(sid, "Yes")                                  # accept the offer
-    assert out["state"] == "ESCALATED"
+    assert out["state"] == "RATING"                        # rating ask after the card
     card = next(m for m in out["messages"] if m["type"] == "escalation_card")
     sugg = db.get_conn().execute("SELECT * FROM suggestions WHERE source='chat'").fetchone()
     assert sugg is not None
@@ -371,7 +382,7 @@ def test_list_sweep_expires_stale_sessions(start, client):
 def test_escalation_creates_conversation_and_chat_suggestion(issue_session, say, known_player):
     sid = issue_session()
     out = say(sid, "I want to talk to a real person")
-    assert out["state"] == "ESCALATED"
+    assert out["state"] == "RATING"                        # ticket exists; rating pending
     card = next(m for m in out["messages"] if m["type"] == "escalation_card")
     public_id = card["meta"]["public_id"]
     assert re.fullmatch(r"PR-[A-Z2-7]{5}", public_id)
@@ -397,13 +408,25 @@ def test_escalation_creates_conversation_and_chat_suggestion(issue_session, say,
     assert conn.execute("SELECT escalations FROM chat_usage").fetchone()["escalations"] == 1
 
 
-def test_tone_corpus_excludes_chat_rows():
+def test_tone_corpus_chat_rows_need_staff_signal():
+    """SPEC-08 §5 refined (John 2026-07-08): chat rows join the tone corpus only
+    with staff signal (approved or edited); raw unreviewed chat stays out."""
     with db.tx() as c:
         chat_cid = c.execute("INSERT INTO conversations (channel, origin) VALUES ('chat','live')").lastrowid
         disc_cid = c.execute("INSERT INTO conversations (channel, origin) VALUES ('discord','backfill')").lastrowid
+        # raw chat row: sent by the bot, never touched by staff -> excluded
         c.execute("INSERT INTO suggestions (conversation_id, source, question, suggested_answer, "
-                  "edited_answer, staff_answer) VALUES (?, 'chat', 'q', 'chat draft', "
-                  "'CHAT-EDIT must never train tone', 'a chat staff answer long enough to qualify here')",
+                  "staff_answer, status) VALUES (?, 'chat', 'q', 'chat raw draft', "
+                  "'a RAW-CHAT staff answer long enough to qualify here', 'sent')",
+                  (chat_cid,))
+        # chat row a human edited -> correction pair joins the corpus
+        c.execute("INSERT INTO suggestions (conversation_id, source, question, suggested_answer, "
+                  "edited_answer, status) VALUES (?, 'chat', 'q', 'chat draft', "
+                  "'CHAT-EDIT how we actually say it', 'pending')", (chat_cid,))
+        # chat row staff approved (no edit) with a staff answer -> voice joins
+        c.execute("INSERT INTO suggestions (conversation_id, source, question, suggested_answer, "
+                  "staff_answer, status) VALUES (?, 'chat', 'q', 'chat approved draft', "
+                  "'an APPROVED-CHAT staff answer long enough to qualify', 'approved')",
                   (chat_cid,))
         c.execute("INSERT INTO suggestions (conversation_id, source, question, suggested_answer, "
                   "edited_answer, staff_answer) VALUES (?, 'discord', 'q', 'discord draft', "
@@ -411,6 +434,7 @@ def test_tone_corpus_excludes_chat_rows():
                   (disc_cid,))
     stats = tone.build_style_block()
     block = tone.get_style_block()
-    assert stats["n_pairs"] == 1 and stats["n_staff"] == 1
-    assert "DISCORD-EDIT" in block and "CHAT-EDIT" not in block
-    assert "chat staff answer" not in block
+    assert stats["n_pairs"] == 2 and stats["n_staff"] == 2
+    assert "DISCORD-EDIT" in block and "CHAT-EDIT" in block
+    assert "APPROVED-CHAT" in block
+    assert "RAW-CHAT" not in block                         # unreviewed chat never trains

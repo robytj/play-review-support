@@ -34,18 +34,25 @@ def _clip(text: str, n: int) -> str:
     return text if len(text) <= n else text[: n - 1].rstrip() + "…"
 
 
+# Chat-row admission rule (SPEC-08 §5, refined per John 2026-07-08 "learn from
+# every response"): chat suggestions join the corpus ONLY when they carry staff
+# signal -- status='approved' or a human edit (edited_answer). Raw unreviewed
+# chat output (plain 'sent'/pending rows) never trains the voice; the original
+# shadow guard survives for everything a human hasn't touched.
+_CHAT_STAFF_SIGNAL_SQL = (
+    "(source != 'chat' OR status = 'approved' OR edited_answer IS NOT NULL)"
+)
+
+
 def _select(conn, n_pairs: int, m_staff: int):
-    # source != 'chat': shadow chat sessions (SPEC-08 §5/§8) are test traffic --
-    # their escalated suggestions (and any edits reviewers make to them) must never
-    # train the voice. Explicit guard in code, not convention.
     pairs = conn.execute(
-        """
+        f"""
         SELECT suggested_answer, edited_answer
         FROM suggestions
         WHERE edited_answer IS NOT NULL
           AND TRIM(edited_answer) != ''
           AND edited_answer != suggested_answer
-          AND source != 'chat'
+          AND {_CHAT_STAFF_SIGNAL_SQL}
         ORDER BY id DESC
         LIMIT ?
         """,
@@ -55,11 +62,11 @@ def _select(conn, n_pairs: int, m_staff: int):
     # Representative staff replies: bounded length (skip one-liners and walls of text),
     # de-duplicated, most recent first. Bounded query — no scan of the whole table body.
     staff = conn.execute(
-        """
+        f"""
         SELECT staff_answer FROM suggestions
         WHERE staff_answer IS NOT NULL
           AND LENGTH(staff_answer) BETWEEN 40 AND 600
-          AND source != 'chat'
+          AND {_CHAT_STAFF_SIGNAL_SQL}
         GROUP BY staff_answer
         ORDER BY MAX(id) DESC
         LIMIT ?

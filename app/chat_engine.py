@@ -8,9 +8,16 @@ Haiku call to phrase the recognition line (template fallback on failure), (b) th
 Tier-2 RAG call inside router.suggest() -- reused pure, never forked -- and (c) the
 Haiku vision SID extraction for uploaded screenshots. Shadow semantics: sessions
 persist in chat_sessions/chat_messages (shadow=1) and NOTHING here touches
-metrics_daily (no bump_metric call in this module), the tone corpus (guarded in
-app/tone.py), messages/answer_cache via the live answer() path, or the public
-/chat endpoint.
+metrics_daily (no bump_metric call in this module), messages/answer_cache via the
+live answer() path, or the public /chat endpoint. Tone corpus: chat rows are
+admitted ONLY once they carry staff signal (approved / edited -- guard in
+app/tone.py); raw unreviewed chat output never trains the voice.
+
+Live human takeover: a staff member can flip a session's controller to 'human'
+(taken_over_by/taken_over_at). While human-controlled, handle_message() only
+stores the player message -- no pipeline, no bot reply, no budgets, no idle
+expiry (for 30 min from takeover) -- and staff replies arrive via
+agent_message() (role='agent', player-visible). release() hands back to the bot.
 
 All Mongo reads go through app/player_context.py keyed to the session's ONE
 resolved SID -- the cross-player guard below is a refusal backstop on top of that
@@ -30,6 +37,8 @@ from app import (config, db, embeddings, llm, player_context, router, scope_gate
 
 TERMINAL_STATES = {"RESOLVED", "ESCALATED", "EXPIRED", "ENDED"}
 IDLE_LIMIT_MINUTES = 10          # SPEC-08 §2: idle 10 min -> auto-close (lazy, server-side)
+TAKEOVER_GRACE_MINUTES = 30      # human-controlled sessions skip idle expiry this long
+LIVE_WINDOW_SECONDS = 120        # session list "live" flag: activity within this window
 MAX_SID_TEXT_ATTEMPTS = 3
 MAX_IMAGE_ATTEMPTS = 2
 
@@ -69,6 +78,14 @@ ESCALATE_DECLINED = "No problem — what else can I help you with?"
 GOODBYE = "Thanks for stopping by — start a New Chat anytime!"
 TIMEOUT_GOODBYE = ("Looks like you stepped away, so I'm closing this chat for now — "
                    "start a New Chat anytime!")
+HUMAN_TAKEOVER_NOTE = "You're now chatting with a human from PrimeRush support."
+BOT_RELEASE_NOTE = "The assistant is back with you."
+RATING_QUESTION = "Before you go — how was this conversation?"
+RATING_CHIPS = ["1", "2", "3", "4", "5"]
+RATING_THANKS = "Thanks for the feedback — it really helps!"
+
+# "4", "4 stars", "4 star", "4/5" -- anything else is NOT a rating (no nagging).
+RATING_RE = re.compile(r"^\s*([1-5])\s*(?:/\s*5|\s*stars?)?\s*[.!]*\s*$", re.IGNORECASE)
 
 # SID-shaped token (SPEC-08 §3.2). Scans the raw text (uppercase only) so ordinary
 # lowercase words like "download" can't false-positive; players paste SIDs as-is.
@@ -215,6 +232,7 @@ def budget_dict(session) -> dict:
 def _result(session_id: int, msgs: list[dict]) -> dict:
     session = _get(session_id)
     return {"session_id": session_id, "state": session["state"],
+            "controller": session["controller"],   # frontend polls while 'human'
             "messages": msgs, "budget": budget_dict(session)}
 
 
@@ -237,10 +255,25 @@ def _daily_tier2_calls() -> int:
 
 # ------------------------------------------------------------------ idle expiry --
 
+def _human_hold(session) -> bool:
+    """True while a human takeover suspends idle expiry: controller='human' AND
+    the takeover is younger than TAKEOVER_GRACE_MINUTES (a forgotten takeover
+    can't pin a session open forever)."""
+    if session["controller"] != "human" or not session["taken_over_at"]:
+        return False
+    return bool(db.get_conn().execute(
+        "SELECT 1 FROM chat_sessions WHERE id = ? AND taken_over_at >= datetime('now', ?)",
+        (session["id"], f"-{TAKEOVER_GRACE_MINUTES} minutes"),
+    ).fetchone())
+
+
 def _expire_if_idle(session) -> tuple[object, list[dict]]:
     """Lazy timeout (SPEC-08 §2): if a live session has been idle > 10 min, close it
-    now with a goodbye. Returns (fresh session row, goodbye messages added)."""
+    now with a goodbye. Returns (fresh session row, goodbye messages added).
+    Skipped while a human controls the session (within the takeover grace)."""
     if session["state"] in TERMINAL_STATES:
+        return session, []
+    if _human_hold(session):
         return session, []
     stale = db.get_conn().execute(
         "SELECT 1 FROM chat_sessions WHERE id = ? "
@@ -256,13 +289,15 @@ def _expire_if_idle(session) -> tuple[object, list[dict]]:
 
 def sweep_expired():
     """Bulk lazy expiry used by the session list (SPEC-08 §2 'list sweeps'). State
-    flip only -- the per-session goodbye is added when that session is next opened."""
+    flip only -- the per-session goodbye is added when that session is next opened.
+    Human-controlled sessions within the takeover grace are exempt."""
     with db.tx() as c:
         c.execute(
             "UPDATE chat_sessions SET state='EXPIRED', ended_at=datetime('now'), "
             "end_reason='timeout' WHERE state NOT IN ('RESOLVED','ESCALATED','EXPIRED','ENDED') "
-            "AND last_activity_at < datetime('now', ?)",
-            (f"-{IDLE_LIMIT_MINUTES} minutes",),
+            "AND last_activity_at < datetime('now', ?) "
+            "AND NOT (controller = 'human' AND taken_over_at >= datetime('now', ?))",
+            (f"-{IDLE_LIMIT_MINUTES} minutes", f"-{TAKEOVER_GRACE_MINUTES} minutes"),
         )
 
 
@@ -304,14 +339,124 @@ def get_session(session_id: int) -> dict:
 def list_sessions(limit: int = 50, offset: int = 0) -> dict:
     sweep_expired()
     conn = db.get_conn()
+    terminal = ",".join(f"'{s}'" for s in sorted(TERMINAL_STATES))
     rows = conn.execute(
-        "SELECT id, created_at, last_activity_at, state, game_choice, sid, player_name, "
-        "msg_count, tier2_used, strikes, escalated_conversation_id, ended_at, end_reason "
-        "FROM chat_sessions ORDER BY id DESC LIMIT ? OFFSET ?",
-        (limit, offset),
+        f"SELECT id, created_at, last_activity_at, state, game_choice, sid, player_name, "
+        f"msg_count, tier2_used, strikes, escalated_conversation_id, ended_at, end_reason, "
+        f"controller, taken_over_by, rating, "
+        f"(state NOT IN ({terminal}) AND last_activity_at >= datetime('now', ?)) AS live "
+        f"FROM chat_sessions ORDER BY id DESC LIMIT ? OFFSET ?",
+        (f"-{LIVE_WINDOW_SECONDS} seconds", limit, offset),
     ).fetchall()
     total = conn.execute("SELECT COUNT(*) AS n FROM chat_sessions").fetchone()["n"]
-    return {"sessions": [dict(r) for r in rows], "total": total}
+    sessions = []
+    for r in rows:
+        d = dict(r)
+        d["live"] = bool(d["live"])  # player plausibly still in the tab -> takeover target
+        sessions.append(d)
+    return {"sessions": sessions, "total": total}
+
+
+# ------------------------------------------------------------ live human takeover --
+
+class NotHumanControlled(Exception):
+    """Raised when an agent action needs controller='human' but the bot holds the
+    session (API -> 409)."""
+
+
+def _messages_tail(session_id: int, limit: int = 50) -> list[dict]:
+    rows = db.get_conn().execute(
+        "SELECT * FROM (SELECT * FROM chat_messages WHERE session_id = ? "
+        "ORDER BY id DESC LIMIT ?) ORDER BY id ASC",
+        (session_id, limit),
+    ).fetchall()
+    return [_msg_dict(r) for r in rows]
+
+
+def _session_public(session) -> dict:
+    s = dict(session)
+    s.pop("meta_json", None)
+    s["budget"] = budget_dict(session)
+    return s
+
+
+def take_over(session_id: int, staff: str) -> dict:
+    """Flip the session to human control. 409 on terminal sessions. Appends a
+    player-visible system note and audits a 'takeover' ticket event when the
+    session is linked to an escalated conversation."""
+    session = _get(session_id)
+    if session["state"] in TERMINAL_STATES:
+        raise SessionClosed(session["state"])
+    _update(session_id, controller="human", taken_over_by=staff,
+            taken_over_at=_now(), last_activity_at=_now())
+    _add_msg(session_id, "system", "system", HUMAN_TAKEOVER_NOTE,
+             {"takeover": True, "staff": staff})
+    if session["escalated_conversation_id"]:
+        with db.tx() as c:
+            ticketing.add_event(c, session["escalated_conversation_id"], staff,
+                                "takeover", {"chat_session_id": session_id})
+    session = _get(session_id)
+    return {"session": _session_public(session), "messages": _messages_tail(session_id)}
+
+
+def release(session_id: int, staff: str) -> dict:
+    """Hand the session back to the bot. 409 unless currently human-controlled.
+    taken_over_by/at are kept as a record of the last takeover."""
+    session = _get(session_id)
+    if session["controller"] != "human":
+        raise NotHumanControlled("session is not human-controlled")
+    _update(session_id, controller="bot", last_activity_at=_now())
+    _add_msg(session_id, "system", "system", BOT_RELEASE_NOTE,
+             {"release": True, "staff": staff})
+    if session["escalated_conversation_id"]:
+        with db.tx() as c:
+            ticketing.add_event(c, session["escalated_conversation_id"], staff,
+                                "release", {"chat_session_id": session_id})
+    session = _get(session_id)
+    return {"session": _session_public(session), "messages": _messages_tail(session_id)}
+
+
+def agent_message(session_id: int, staff: str, text: str) -> dict:
+    """A staff reply to the player during a takeover: player-visible role='agent'
+    chat message. When the session is linked to an escalated conversation, the
+    reply is ALSO written there as a staff reply (messages role='human', same
+    role the backfill uses) so future tone learning sees how staff actually
+    answered (SPEC-08 §5 refinement)."""
+    session = _get(session_id)
+    if session["state"] in TERMINAL_STATES:
+        raise SessionClosed(session["state"])
+    if session["controller"] != "human":
+        raise NotHumanControlled("take the session over before replying")
+    msg = _add_msg(session_id, "agent", "text", text, {"staff": staff})
+    _touch(session_id)
+    if session["escalated_conversation_id"]:
+        with db.tx() as c:
+            c.execute(
+                "INSERT INTO messages (conversation_id, role, tier_used, text, author_name) "
+                "VALUES (?, 'human', NULL, ?, ?)",
+                (session["escalated_conversation_id"], text, staff),
+            )
+            c.execute("UPDATE conversations SET updated_at = datetime('now') WHERE id = ?",
+                      (session["escalated_conversation_id"],))
+            ticketing.stamp_first_human_response(c, session["escalated_conversation_id"])
+    session = _get(session_id)
+    return {"session_id": session_id, "state": session["state"],
+            "controller": session["controller"], "messages": [msg]}
+
+
+def get_messages(session_id: int, after_id: int = 0) -> dict:
+    """Incremental transcript fetch -- both the observing agent and the player tab
+    poll this during a takeover. Runs the lazy expiry (which respects the
+    human-controlled hold) so a poll can surface the timeout goodbye."""
+    session = _get(session_id)
+    session, _extra = _expire_if_idle(session)
+    rows = db.get_conn().execute(
+        "SELECT * FROM chat_messages WHERE session_id = ? AND id > ? ORDER BY id ASC",
+        (session_id, after_id),
+    ).fetchall()
+    return {"session_id": session_id, "state": session["state"],
+            "controller": session["controller"],
+            "messages": [_msg_dict(r) for r in rows]}
 
 
 # ------------------------------------------------------------- message handling --
@@ -325,6 +470,15 @@ def handle_message(session_id: int, text: str) -> dict:
         return _result(session_id, expiry_msgs)
 
     text = (text or "").strip()
+
+    if session["controller"] == "human":
+        # Live takeover: store the player message for the human agent and stop --
+        # no pipeline, no bot reply, no budgets consumed (msg_count untouched).
+        # The agent (and the player tab) pick it up via GET /messages polling.
+        _add_msg(session_id, "user", "text", text)
+        _touch(session_id)
+        return _result(session_id, [])
+
     user_msg = _add_msg(session_id, "user", "text", text)
     _update(session_id, msg_count=session["msg_count"] + 1, last_activity_at=_now())
     session = _get(session_id)
@@ -336,6 +490,8 @@ def handle_message(session_id: int, text: str) -> dict:
         out = _handle_sid_text(session, text)
     elif state == "CONFIRM_NAME":
         out = _handle_confirm_name(session, text)
+    elif state == "RATING":
+        out = _handle_rating(session, text)
     else:  # ISSUE_LOOP
         out = _issue_loop(session, text)
     return _result(session_id, [user_msg] + out)
@@ -350,6 +506,11 @@ def handle_image(session_id: int, image_b64: str, media_type: str) -> dict:
     session, expiry_msgs = _expire_if_idle(session)
     if expiry_msgs:
         return _result(session_id, expiry_msgs)
+    if session["controller"] == "human":
+        # takeover: record the upload for the agent, no vision call, no bot reply
+        _add_msg(session_id, "user", "text", "[screenshot uploaded]", {"image": True})
+        _touch(session_id)
+        return _result(session_id, [])
     if session["state"] != "ASK_SID":
         raise ValueError("images are only accepted while identifying your account")
 
@@ -534,6 +695,50 @@ def _enter_degraded(session) -> list[dict]:
     return [note, prompt]
 
 
+# ------------------------------------------------------------------ star rating --
+
+def _ask_rating(session_id: int, meta: dict, close_state: str, end_reason: str) -> list[dict]:
+    """Enter RATING: one player-visible ask with 1-5 chips. Where the session
+    closes afterwards (RESOLVED vs ESCALATED) is parked in meta until the answer."""
+    meta["rating_close"] = close_state
+    meta["rating_end_reason"] = end_reason
+    _save_meta(session_id, meta)
+    _update(session_id, state="RATING")
+    return [_add_msg(session_id, "bot", "rating", RATING_QUESTION,
+                     {"chips": list(RATING_CHIPS), "rating": True})]
+
+
+def _parse_rating(text: str) -> int | None:
+    m = RATING_RE.match(text or "")
+    return int(m.group(1)) if m else None
+
+
+def _handle_rating(session, text: str) -> list[dict]:
+    """One shot: a parseable 1-5 ('4', '4 stars', '4/5') is stored + thanked;
+    anything else closes without a rating -- never nag. Then the session closes
+    to whatever the flow dictated (RESOLVED or ESCALATED)."""
+    sid = session["id"]
+    meta = _meta(session)
+    close_state = meta.pop("rating_close", "RESOLVED")
+    end_reason = meta.pop("rating_end_reason", "resolved")
+    _save_meta(sid, meta)
+
+    out = []
+    rating = _parse_rating(text)
+    if rating is not None:
+        _update(sid, rating=rating)
+        if session["escalated_conversation_id"]:
+            # linked ticket keeps the signal in its audit trail too
+            with db.tx() as c:
+                ticketing.add_event(c, session["escalated_conversation_id"], "player",
+                                    "rating", {"rating": rating, "chat_session_id": sid})
+        out.append(_add_msg(sid, "bot", "text", RATING_THANKS))
+    if close_state == "RESOLVED":
+        out.append(_add_msg(sid, "bot", "text", RESOLVED_GOODBYE))
+    _update(sid, state=close_state, ended_at=_now(), end_reason=end_reason)
+    return out
+
+
 # ------------------------------------------------------------------- issue loop --
 
 def _issue_loop(session, text: str) -> list[dict]:
@@ -550,8 +755,8 @@ def _issue_loop(session, text: str) -> list[dict]:
         last_q = meta.pop("last_question", "")
         _save_meta(sid, meta)
         if _is_yes(text):
-            _update(sid, state="RESOLVED", ended_at=_now(), end_reason="resolved")
-            return [_add_msg(sid, "bot", "text", RESOLVED_GOODBYE)]
+            # solved -> ask for a star rating before closing (RESOLVED on answer)
+            return _ask_rating(sid, meta, close_state="RESOLVED", end_reason="resolved")
         if _is_no(text):
             meta["escalate_offer"] = True
             meta["last_question"] = last_q
@@ -829,7 +1034,7 @@ def _escalate(session, question: str, reason: str, end_reason: str = "escalated"
 
     transcript = db.get_conn().execute(
         "SELECT role, content FROM chat_messages WHERE session_id = ? "
-        "AND role IN ('user','bot') ORDER BY id ASC", (sid,)
+        "AND role IN ('user','bot','agent') ORDER BY id ASC", (sid,)
     ).fetchall()
 
     full_question = (f"[shadow chat escalation — {reason}]\n"
@@ -844,11 +1049,12 @@ def _escalate(session, question: str, reason: str, end_reason: str = "escalated"
              session["sid"], public_id),
         )
         conversation_id = cur.lastrowid
+        role_map = {"user": "user", "agent": "human"}  # agent replies ARE staff replies
         for m in transcript:
             c.execute(
                 "INSERT INTO messages (conversation_id, role, tier_used, text) "
                 "VALUES (?, ?, NULL, ?)",
-                (conversation_id, "user" if m["role"] == "user" else "bot", m["content"]),
+                (conversation_id, role_map.get(m["role"], "bot"), m["content"]),
             )
         c.execute(
             "INSERT INTO suggestions (conversation_id, source, question, suggested_answer, "
@@ -873,12 +1079,14 @@ def _escalate(session, question: str, reason: str, end_reason: str = "escalated"
                              "sid": session["sid"], "public_id": public_id,
                              "summary": " | ".join(summary_bits)})
     _bump_usage("escalations")
-    _update(sid, state="ESCALATED", escalated_conversation_id=conversation_id,
-            ended_at=_now(), end_reason=end_reason)
+    _update(sid, escalated_conversation_id=conversation_id)
 
     card = _add_msg(sid, "bot", "escalation_card",
                     f"I've raised this with the team — ticket {public_id}. A human "
                     "will pick it up from here; thanks for your patience!",
                     {"conversation_id": conversation_id, "public_id": public_id,
                      "reason": reason})
-    return [card]
+    # Star rating right after the escalation card; the session closes to
+    # ESCALATED (with the original end_reason) once the player answers/passes.
+    return [card] + _ask_rating(sid, _meta(_get(sid)), close_state="ESCALATED",
+                                end_reason=end_reason)

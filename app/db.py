@@ -272,15 +272,16 @@ def _migrate(conn):
 
         -- SPEC-08 §5 -- shadow chat agent storage. Every session persists
         -- (shadow=1) for training/exploit review; chat rows are EXCLUDED from
-        -- metrics_daily (the chat engine never calls bump_metric) and from the
-        -- tone corpus (explicit source != 'chat' guard in app/tone.py).
+        -- metrics_daily (the chat engine never calls bump_metric); in the tone
+        -- corpus, chat rows count ONLY once they carry staff signal
+        -- (approved or edited -- see the guard in app/tone.py).
         -- meta_json holds small per-session runtime flags (degraded mode, pending
-        -- CSAT/clarify state) that aren't worth their own columns.
+        -- CSAT/clarify/rating state) that aren't worth their own columns.
         CREATE TABLE IF NOT EXISTS chat_sessions (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
             created_at TEXT DEFAULT (datetime('now')),
             last_activity_at TEXT DEFAULT (datetime('now')),
-            state TEXT NOT NULL DEFAULT 'ASK_GAME',  -- ASK_GAME|ASK_SID|CONFIRM_NAME|ISSUE_LOOP|RESOLVED|ESCALATED|EXPIRED|ENDED
+            state TEXT NOT NULL DEFAULT 'ASK_GAME',  -- ASK_GAME|ASK_SID|CONFIRM_NAME|ISSUE_LOOP|RATING|RESOLVED|ESCALATED|EXPIRED|ENDED
             game_choice TEXT,
             sid TEXT,
             player_name TEXT,
@@ -294,14 +295,18 @@ def _migrate(conn):
             escalated_conversation_id INTEGER REFERENCES conversations(id),
             ended_at TEXT,
             end_reason TEXT,                 -- resolved|escalated|timeout|manual|strikes|msg_budget
-            meta_json TEXT DEFAULT '{}'
+            meta_json TEXT DEFAULT '{}',
+            controller TEXT NOT NULL DEFAULT 'bot',  -- bot | human (live takeover)
+            taken_over_by TEXT,              -- staff email (X-Staff-Email) of the takeover
+            taken_over_at TEXT,
+            rating INTEGER                   -- 1-5 star rating at conversation end, NULL = not given
         );
 
         CREATE TABLE IF NOT EXISTS chat_messages (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
             session_id INTEGER NOT NULL REFERENCES chat_sessions(id),
-            role TEXT NOT NULL,              -- user | bot | system
-            type TEXT NOT NULL DEFAULT 'text',  -- text|chips|context_card|recognition|ban_card|escalation_card|csat|system
+            role TEXT NOT NULL,              -- user | bot | system | agent (human staff during takeover)
+            type TEXT NOT NULL DEFAULT 'text',  -- text|chips|context_card|recognition|ban_card|escalation_card|csat|rating|system
             content TEXT NOT NULL,
             meta_json TEXT DEFAULT '{}',
             created_at TEXT DEFAULT (datetime('now'))
@@ -346,6 +351,19 @@ def _migrate(conn):
         """
     )
     conn.commit()
+
+    # Live human takeover + star rating columns on chat_sessions (idempotent, for
+    # DBs created before the columns were added to the CREATE TABLE above).
+    chat_cols = {row["name"] for row in conn.execute("PRAGMA table_info(chat_sessions)").fetchall()}
+    if "controller" not in chat_cols:
+        conn.execute("ALTER TABLE chat_sessions ADD COLUMN controller TEXT NOT NULL DEFAULT 'bot'")
+        conn.commit()
+    for col, decl in (("taken_over_by", "TEXT"), ("taken_over_at", "TEXT"),
+                      ("rating", "INTEGER")):
+        if col not in chat_cols:
+            conn.execute(f"ALTER TABLE chat_sessions ADD COLUMN {col} {decl}")
+            conn.commit()
+
     _seed_ban_responses(conn)
     _seed_sid_helper(conn)
 

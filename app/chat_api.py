@@ -15,7 +15,7 @@ from fastapi.responses import JSONResponse
 from pydantic import BaseModel
 
 from app import chat_engine, config
-from app.dashboard_api import require_service_key
+from app.dashboard_api import require_service_key, _staff_actor
 
 router = APIRouter(prefix="/api/dashboard/chat")
 
@@ -116,3 +116,51 @@ def get_session(session_id: int):
 @router.get("/sessions", dependencies=[Depends(require_service_key)])
 def list_sessions(limit: int = 50, offset: int = 0):
     return chat_engine.list_sessions(limit=min(limit, 200), offset=max(offset, 0))
+
+
+# --------------------------------------------------------- live human takeover --
+# Staff attribution mirrors ticketing (SPEC-09 §6): the responder proxy forwards
+# the logged-in user's Google email as X-Staff-Email; absent header -> 'system'.
+
+@router.post("/sessions/{session_id}/takeover", dependencies=[Depends(require_service_key)])
+def takeover(session_id: int, actor: str = Depends(_staff_actor)):
+    try:
+        return chat_engine.take_over(session_id, actor)
+    except chat_engine.SessionNotFound:
+        raise HTTPException(404, "session not found")
+    except chat_engine.SessionClosed as e:
+        return _closed(e)
+
+
+@router.post("/sessions/{session_id}/release", dependencies=[Depends(require_service_key)])
+def release(session_id: int, actor: str = Depends(_staff_actor)):
+    try:
+        return chat_engine.release(session_id, actor)
+    except chat_engine.SessionNotFound:
+        raise HTTPException(404, "session not found")
+    except chat_engine.NotHumanControlled as e:
+        raise HTTPException(409, str(e))
+
+
+@router.post("/sessions/{session_id}/agent-message", dependencies=[Depends(require_service_key)])
+def agent_message(session_id: int, req: MessageRequest, actor: str = Depends(_staff_actor)):
+    if not (req.text or "").strip():
+        raise HTTPException(400, "text required")
+    try:
+        return chat_engine.agent_message(session_id, actor, req.text.strip())
+    except chat_engine.SessionNotFound:
+        raise HTTPException(404, "session not found")
+    except chat_engine.SessionClosed as e:
+        return _closed(e)
+    except chat_engine.NotHumanControlled as e:
+        raise HTTPException(409, str(e))
+
+
+@router.get("/sessions/{session_id}/messages", dependencies=[Depends(require_service_key)])
+def poll_messages(session_id: int, after_id: int = 0):
+    """Incremental transcript fetch -- both the observing agent and the player tab
+    poll this (e.g. every 2-3s) while controller='human'."""
+    try:
+        return chat_engine.get_messages(session_id, after_id=max(after_id, 0))
+    except chat_engine.SessionNotFound:
+        raise HTTPException(404, "session not found")
