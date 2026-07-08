@@ -344,11 +344,13 @@ def test_chat_escalation_writes_created_and_escalated_events(issue_session, say,
     assert created["chat_session_id"] == sid and created["public_id"] == card["meta"]["public_id"]
     assert escalated["reason"] == "player asked for a human"
 
-    # ACTIVE payer with purchase context -> P2 + a 12h SLA from creation (SPEC-09 §3)
+    # ACTIVE payer -> auto-P1 (overrides the purchase-context P2 default) with a
+    # 4h SLA from creation, and the created event logs the reason
+    assert created["reason"] == "payer auto-P1" and created["payer_tier"] == "ACTIVE"
     row = db.get_conn().execute("SELECT * FROM conversations WHERE id = ?", (cid,)).fetchone()
-    assert row["priority"] == "P2"
+    assert row["priority"] == "P1"
     expect = db.get_conn().execute(
-        "SELECT datetime(?, '+12 hours') AS t", (row["created_at"],)).fetchone()["t"]
+        "SELECT datetime(?, '+4 hours') AS t", (row["created_at"],)).fetchone()["t"]
     assert row["due_at"] == expect
 
 
@@ -373,3 +375,99 @@ def test_settings_expose_sla_and_outreach(dash):
     j = dash.get("/api/dashboard/settings", headers=AUTH).json()
     assert j["sla_hours"] == {"P1": 4, "P2": 12, "P3": 24, "P4": 72}
     assert j["outreach_enabled"] is False
+
+
+# --------------------------------------------------------------- payer auto-P1 --
+
+def test_default_priority_payer_override_rules():
+    # payer overrides everything, any non-NONE tier counts
+    for tier in ("ACTIVE", "DORMANT", "LAPSED", "active"):
+        assert ticketing.default_priority("hello", payer_tier=tier) == "P1"
+    assert ticketing.default_priority("refund please", payer_tier="ACTIVE") == "P1"
+    assert ticketing.default_priority("x", has_ban_context=True, payer_tier="LAPSED") == "P1"
+    # non-payers keep the SPEC-09 defaults
+    assert ticketing.default_priority("refund please", payer_tier="NONE") == "P2"
+    assert ticketing.default_priority("hello", payer_tier=None) == "P3"
+    assert ticketing.default_priority("hello", payer_tier="") == "P3"
+
+
+def test_get_or_create_conversation_payer_auto_p1(monkeypatch):
+    from app import player_context, router
+    from conftest import make_ctx
+
+    monkeypatch.setattr(player_context, "get_player_context",
+                        lambda s: make_ctx() if (s or "").upper() == "EDFXPT5G" else None)
+    cid = router.get_or_create_conversation("discord", "chan-payer", player_id="EDFXPT5G")
+    row = db.get_conn().execute("SELECT * FROM conversations WHERE id = ?", (cid,)).fetchone()
+    assert row["priority"] == "P1"
+    created = json.loads(_events(cid)[0]["detail_json"])
+    assert created["priority"] == "P1" and created["reason"] == "payer auto-P1"
+    assert created["payer_tier"] == "ACTIVE"
+
+    # unknown SID -> normal default, no reason logged
+    cid2 = router.get_or_create_conversation("discord", "chan-nopayer", player_id="ZZZZ9999")
+    row2 = db.get_conn().execute("SELECT * FROM conversations WHERE id = ?", (cid2,)).fetchone()
+    assert row2["priority"] == "P3"
+    assert "reason" not in json.loads(_events(cid2)[0]["detail_json"])
+
+    # no SID at all -> lookup skipped entirely
+    calls = []
+    monkeypatch.setattr(player_context, "get_player_context",
+                        lambda s: calls.append(s) or None)
+    cid3 = router.get_or_create_conversation("discord", "chan-nosid")
+    assert calls == []
+    assert db.get_conn().execute("SELECT priority FROM conversations WHERE id = ?",
+                                 (cid3,)).fetchone()["priority"] == "P3"
+
+
+def test_get_or_create_conversation_degrades_when_mongo_down(monkeypatch):
+    from app import player_context, router
+    monkeypatch.setattr(player_context, "get_player_context",
+                        lambda s: (_ for _ in ()).throw(RuntimeError("mongo down")))
+    cid = router.get_or_create_conversation("discord", "chan-down", player_id="EDFXPT5G")
+    row = db.get_conn().execute("SELECT * FROM conversations WHERE id = ?", (cid,)).fetchone()
+    assert row["priority"] == "P3"          # degraded: no override, no crash
+
+
+def test_non_payer_chat_escalation_keeps_p2_default(issue_session, say, monkeypatch):
+    from app import player_context
+    from conftest import make_ctx
+    ctx = make_ctx(payer_tier="NONE", supporter_band="NONE",
+                   transactions={"real_money_count": 0, "refunded_count": 0,
+                                 "first_purchase": None, "last_purchase": None,
+                                 "payment_systems": [], "recent": [], "scanned": 0})
+    monkeypatch.setattr(player_context, "get_player_context",
+                        lambda s: ctx if (s or "").strip().upper() == ctx.sid else None)
+    sid = issue_session()
+    out = say(sid, "I need a refund, please get me a human")
+    card = next(m for m in out["messages"] if m["type"] == "escalation_card")
+    cid = card["meta"]["conversation_id"]
+    row = db.get_conn().execute("SELECT * FROM conversations WHERE id = ?", (cid,)).fetchone()
+    assert row["priority"] == "P2"          # keyword P2, no payer override
+    assert "reason" not in json.loads(_events(cid)[0]["detail_json"])
+
+
+# ------------------------------------------------- recommendations >= 80% only --
+
+def test_recommendations_filter_below_min_similarity(dash, monkeypatch):
+    from app import vectorstore
+    monkeypatch.setattr(embeddings, "is_using_fallback", lambda: False)
+    monkeypatch.setattr(embeddings, "embed", lambda t: [0.0])
+    with db.tx() as c:
+        hi = c.execute("INSERT INTO kb_articles (title, symptom, answer, tags, status) "
+                       "VALUES ('Strong match', 's', 'a', '', 'published')").lastrowid
+        lo = c.execute("INSERT INTO kb_articles (title, symptom, answer, tags, status) "
+                       "VALUES ('Weak match', 's', 'a', '', 'published')").lastrowid
+    monkeypatch.setattr(vectorstore, "search",
+                        lambda table, vec, top_k=3, where=None: [(hi, 0.91), (lo, 0.62)])
+    cid = _mk_convo(player_id="EDFXPT5G", question="anything")
+    j = dash.get(f"/api/dashboard/conversations/{cid}/recommendations", headers=AUTH).json()
+    assert j["min_similarity"] == 0.8
+    assert [m["id"] for m in j["kb_matches"]] == [hi]      # 0.62 filtered out
+    assert j["kb_matches"][0]["similarity"] == 0.91        # raw similarity for the UI %
+    assert "payments" not in [a["key"] for a in j["actions"]]  # rule actions untouched
+
+    # hot-readable: config change applies without restart
+    monkeypatch.setattr(config, "RECOMMENDATIONS_MIN_SIMILARITY", 0.5)
+    j = dash.get(f"/api/dashboard/conversations/{cid}/recommendations", headers=AUTH).json()
+    assert [m["id"] for m in j["kb_matches"]] == [hi, lo]

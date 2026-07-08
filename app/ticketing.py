@@ -76,11 +76,28 @@ def add_event(conn, conversation_id: int, actor: str, event: str, detail: dict |
     )
 
 
+def is_payer(payer_tier) -> bool:
+    """Any real-money purchase history (ACTIVE/DORMANT/LAPSED) counts; only
+    NONE/unknown doesn't."""
+    return bool(payer_tier) and str(payer_tier).strip().upper() != "NONE"
+
+
+PAYER_AUTO_P1_REASON = "payer auto-P1"
+
+
 def default_priority(text: str = "", has_purchase_context: bool = False,
-                     has_ban_context: bool = False) -> str:
+                     has_ban_context: bool = False, payer_tier: str | None = None) -> str:
     """SPEC-09 §3 creation defaults: payments/refund or ban -> P2, else P3.
     Context flags let the chat escalation path inherit P2 from verified
-    purchase/ban context even when the issue text itself is vague."""
+    purchase/ban context even when the issue text itself is vague.
+
+    Paying customers (John 2026-07-08): payer_tier != NONE overrides every
+    other default -> P1. Callers pass the tier from chat escalation context
+    when present, else a best-effort get_player_context() lookup at creation
+    (degradable: Mongo down -> None -> no override). Log
+    PAYER_AUTO_P1_REASON in the created event detail when this fires."""
+    if is_payer(payer_tier):
+        return "P1"
     if has_purchase_context or has_ban_context:
         return "P2"
     t = text or ""

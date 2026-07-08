@@ -82,6 +82,12 @@ def _apply(cfg: dict):
     outreach_cfg = cfg.get("outreach", {}) or {}
     g["OUTREACH_ENABLED"] = bool(outreach_cfg.get("enabled", False))
 
+    # Recommendations panel: KB matches below this similarity are noise -- hide
+    # them (John 2026-07-08: >= 80% only). Hot-reloadable like the thresholds;
+    # read via config.RECOMMENDATIONS_MIN_SIMILARITY at call time.
+    rec_cfg = cfg.get("recommendations", {}) or {}
+    g["RECOMMENDATIONS_MIN_SIMILARITY"] = float(rec_cfg.get("min_similarity", 0.8))
+
 
 def reload():
     """Re-reads config.yaml from disk and updates the live module globals.
@@ -167,6 +173,12 @@ SECRET_KEY = os.environ.get("SECRET_KEY", "dev-only-not-secure")
 # play-review-responder's own SERVICE_API_KEY pattern. Dashboard API is
 # disabled (503) if unset.
 SUPPORT_SERVICE_API_KEY = os.environ.get("SUPPORT_SERVICE_API_KEY", "")
+
+# SPEC-10 partner API key (SuperX webstore reads a player's own tickets).
+# Deliberately a SEPARATE key from the dashboard one: read-only, SID-bound
+# scope. /api/partner/* is disabled (503) if unset; the dashboard key is never
+# accepted there and vice versa.
+PARTNER_API_KEY = os.environ.get("PARTNER_API_KEY", "")
 
 # SPEC-02 public support site (app/web_support.py). Requests whose Host matches
 # SUPPORT_SITE_HOST are served the player-facing site at root paths (Railway

@@ -1063,17 +1063,24 @@ def _escalate(session, question: str, reason: str, end_reason: str = "escalated"
         )
         # SPEC-09 §1: chat escalations are first-class tickets -- write the
         # created (priority + SLA due_at) and escalated audit events with the
-        # chat context. Priority inherits P2 when verified purchase/ban context
-        # is present, else the keyword/default rules (§3).
+        # chat context. Paying customers auto-P1 (verified payer_tier != NONE);
+        # else priority inherits P2 when verified purchase/ban context is
+        # present, else the keyword/default rules (§3).
+        payer_tier = ctx.payer_tier if ctx else None
         priority = ticketing.default_priority(
             question,
             has_purchase_context=bool(ctx and ctx.transactions
                                       and ctx.transactions.get("real_money_count")),
             has_ban_context=bool(ctx and (ctx.is_banned or ctx.chat_banned)),
+            payer_tier=payer_tier,
         )
+        created_detail = {"source": "chat", "chat_session_id": sid,
+                          "public_id": public_id}
+        if ticketing.is_payer(payer_tier):
+            created_detail["reason"] = ticketing.PAYER_AUTO_P1_REASON
+            created_detail["payer_tier"] = payer_tier
         ticketing.stamp_created(c, conversation_id, actor="bot", priority=priority,
-                                detail={"source": "chat", "chat_session_id": sid,
-                                        "public_id": public_id})
+                                detail=created_detail)
         ticketing.add_event(c, conversation_id, "bot", "escalated",
                             {"reason": reason, "chat_session_id": sid,
                              "sid": session["sid"], "public_id": public_id,

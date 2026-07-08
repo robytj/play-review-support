@@ -202,6 +202,18 @@ def get_or_create_conversation(channel: str, external_id: str, context: str = ""
             with db.tx() as c:
                 c.execute("UPDATE conversations SET player_id = ? WHERE id = ?", (player_id, row["id"]))
         return row["id"]
+    # Paying customers auto-P1: best-effort payer lookup at ticket creation when
+    # a SID is already known. Fully degradable -- Mongo down / driver missing /
+    # unknown SID all yield None and the normal defaults apply.
+    payer_tier = None
+    if (player_id or "").strip():
+        try:
+            from app import player_context
+            ctx = player_context.get_player_context(player_id)
+            payer_tier = ctx.payer_tier if ctx else None
+        except Exception as e:
+            print(f"[warn] payer lookup for priority failed ({e!r})")
+
     with db.tx() as c:
         cur = c.execute(
             "INSERT INTO conversations (channel, external_id, context, player_id) VALUES (?, ?, ?, ?)",
@@ -213,6 +225,11 @@ def get_or_create_conversation(channel: str, external_id: str, context: str = ""
         # first message lands right after), so the keyword rules only see the
         # intake context; staff can re-prioritize (logged) any time.
         from app import ticketing  # local import: ticketing is leaf-level, keep router's import graph flat
+        detail = None
+        if ticketing.is_payer(payer_tier):
+            detail = {"reason": ticketing.PAYER_AUTO_P1_REASON, "payer_tier": payer_tier}
         ticketing.stamp_created(c, conversation_id, actor="bot",
-                                priority=ticketing.default_priority(context or ""))
+                                priority=ticketing.default_priority(
+                                    context or "", payer_tier=payer_tier),
+                                detail=detail)
         return conversation_id

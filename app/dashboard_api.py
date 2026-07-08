@@ -380,11 +380,17 @@ def recommendations(conversation_id: int):
     actions = ticketing.build_recommendations(question, convo["player_id"], context, admin_url)
 
     kb_matches, playbook = [], None
+    # Only confident matches are worth staff attention (config
+    # recommendations.min_similarity, default 0.8 -- hot-reloadable). Each item
+    # carries its raw similarity so the UI can render the %.
+    min_sim = float(getattr(config, "RECOMMENDATIONS_MIN_SIMILARITY", 0.8))
     if question and not embeddings.is_using_fallback():
         try:
             q_vec = embeddings.embed(question)
             for row_id, sim in vectorstore.search("kb_articles", q_vec, top_k=3,
                                                   where="status = 'published'"):
+                if float(sim) < min_sim:
+                    continue
                 art = conn.execute(
                     "SELECT id, title, category, tags FROM kb_articles WHERE id = ?",
                     (row_id,)).fetchone()
@@ -405,6 +411,7 @@ def recommendations(conversation_id: int):
 
     return {"conversation_id": conversation_id, "question": question,
             "kb_matches": kb_matches, "actions": actions, "playbook": playbook,
+            "min_similarity": min_sim,
             "embeddings_available": not embeddings.is_using_fallback()}
 
 

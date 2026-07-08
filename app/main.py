@@ -9,11 +9,12 @@ from fastapi import FastAPI
 from pydantic import BaseModel
 
 from app import db, router
-from app import chat_api, dashboard_api, web_support
+from app import chat_api, dashboard_api, partner_api, web_support
 
 app = FastAPI(title="PrimeRush SupportBot")
 app.include_router(dashboard_api.router)
 app.include_router(chat_api.router)  # shadow chat agent (SPEC-08), same bearer key
+app.include_router(partner_api.router)  # SPEC-10 SuperX player tickets, separate PARTNER_API_KEY
 # SPEC-02 public support site: Host == SUPPORT_SITE_HOST serves it at root
 # (support.primerush.gg), every other host under /site (pre-DNS preview). All
 # existing API routes stay untouched at root -- see app/web_support.py.

@@ -46,3 +46,5 @@ sla:
   P4: 72
 outreach:
   enabled: false
+recommendations:
+  min_similarity: 0.8
