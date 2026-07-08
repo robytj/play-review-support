@@ -19,6 +19,7 @@ Bot reacts to its own answers with 👍/👎; those reactions are logged as feed
 Tier-3 escalations ping the staff role in a private staff channel.
 """
 import json
+import os
 import re
 import sys
 from pathlib import Path
@@ -39,7 +40,14 @@ intents = discord.Intents.default()
 intents.message_content = True
 intents.members = True
 
-bot = commands.Bot(command_prefix="!", intents=intents)
+# Shadow mode connects INVISIBLE -- the hard rule is "the bot never shows online
+# or posts until go-live". Presence off + read-only ingest = watch live tickets
+# without announcing ourselves. (Reactions in shadow are limited to 👀 on fresh
+# player messages, per SHADOW_BACKFILL_SPEC.)
+bot = commands.Bot(
+    command_prefix="!", intents=intents,
+    status=(discord.Status.invisible if app_config.DISCORD_SHADOW_MODE else discord.Status.online),
+)
 
 # in-memory cache of "this discord message id -> supportbot message_id" for reaction feedback.
 # Small and short-lived (only recent bot replies matter) -- fine as a process-local dict;
@@ -118,9 +126,152 @@ def _in_tickets_scope(channel) -> bool:
     return False
 
 
+async def _shadow_ingest(message: discord.Message, external_id: str,
+                         ticket_player_id, question_text, react: bool = True):
+    """Phase 6 live-shadow path. Ingest the ticket and run the router so it shows
+    up in the dashboard feed exactly like a live answer would, but post NOTHING in
+    Discord -- instead persist a PENDING suggestion an admin can approve-and-send
+    from the dashboard (the only Discord-write path). React 👀 (live messages only,
+    not the startup sweep) so it's visible the bot is watching without speaking."""
+    conn = db.get_conn()
+    conv_id = router.get_or_create_conversation("discord", external_id, player_id=ticket_player_id)
+
+    # SID-first ingest resolution (SPEC-01 §3.1): claimed SID (validated) beats an
+    # email found in the text, beats a Mongo-validated body scan; record which
+    # method won in sid_source. Best-effort: Mongo down -> stays NULL, never fatal.
+    sid_resolved = False
+    try:
+        m = re.search(r"[\w.+-]+@[\w-]+\.[\w.-]+", question_text or "")
+        sid, sid_source = sid_lookup.resolve_from_ticket(
+            claimed_sid=ticket_player_id, email=(m.group(0) if m else None),
+            body_text=question_text)
+        if sid:
+            # first resolution wins: never clobber a row something already resolved
+            # (sid_source set); DO replace the raw unvalidated card id if present.
+            conn.execute(
+                "UPDATE conversations SET player_id=?, sid_source=? "
+                "WHERE id=? AND sid_source IS NULL",
+                (sid, sid_source, conv_id))
+            conn.commit()
+            sid_resolved = True
+        else:
+            row = conn.execute("SELECT player_id, sid_source FROM conversations WHERE id=?",
+                               (conv_id,)).fetchone()
+            sid_resolved = bool(row and row["sid_source"])  # resolved on an earlier message
+    except Exception as e:
+        print(f"[warn] ingest SID lookup failed ({e!r})")
+
+    router._log_message(conv_id, "user", None, question_text)
+    result = router.answer(question_text, conv_id)
+    # SID invalid/missing -> the (approved-before-send) reply also asks for the
+    # SID with the find-your-SID helper embedded (SPEC-01 §3.1). Ticket is never
+    # blocked -- it just lands with player_id NULL until the player answers.
+    reply_text = _with_sid_helper(result["text"], sid_resolved)
+
+    # Persist ONE pending suggestion per ticket (skip if this conversation already has
+    # an open one, so player follow-ups don't spawn duplicates in the review grid).
+    try:
+        existing = conn.execute(
+            "SELECT 1 FROM suggestions WHERE conversation_id=? AND status IN ('pending','approved')",
+            (conv_id,)).fetchone()
+        if not existing:
+            conn.execute(
+                "INSERT INTO suggestions (conversation_id, source, question, suggested_answer, "
+                "tier, retrieved_chunks, staff_answer, status) "
+                "VALUES (?, 'discord', ?, ?, ?, ?, NULL, 'pending')",
+                (conv_id, question_text, reply_text, result["tier"],
+                 json.dumps(result.get("chunks") or [], ensure_ascii=False)))
+            conn.commit()
+    except Exception as e:
+        print(f"[warn] couldn't persist live suggestion ({e!r})")
+
+    print(
+        f"[shadow] conv={conv_id} player_id={ticket_player_id!r} tier={result['tier']} "
+        f"escalate={result['escalate']} would_reply={result['text'][:150]!r}"
+    )
+    if react:
+        try:
+            await message.add_reaction("👀")
+        except discord.HTTPException as e:
+            print(f"[warn] couldn't add shadow-mode reaction ({e!r})")
+
+
+# Startup catch-up sweep (John 2026-07-08): "bring back the live tickets from the
+# Discord server so we can see live data at all times." Shadow-only and read-only:
+# tickets that opened while the bot was offline get ingested through the exact
+# same _shadow_ingest path (conversation + pending suggestion, no posts, no 👀 on
+# historical messages). Channels that already have a conversation row are skipped,
+# so restarts never duplicate; new messages afterwards flow through on_message.
+SWEEP_HISTORY_LIMIT = int(os.environ.get("DISCORD_SWEEP_HISTORY", "50"))
+SWEEP_CHANNEL_CAP = int(os.environ.get("DISCORD_SWEEP_CHANNELS", "100"))
+
+
+async def _sweep_live_tickets():
+    if not app_config.DISCORD_SHADOW_MODE:
+        return  # hard guard: the sweep must never run outside shadow mode
+    try:
+        conn = db.get_conn()
+        swept = 0
+        for guild in bot.guilds:
+            channels = [ch for ch in guild.text_channels
+                        if str(getattr(ch, "category_id", "")) == DISCORD_TICKETS_CATEGORY_ID]
+            for ch in list(channels):
+                channels.extend(list(getattr(ch, "threads", []) or []))
+            for ch in channels[:SWEEP_CHANNEL_CAP]:
+                external_id = str(ch.id)
+                if conn.execute(
+                        "SELECT 1 FROM conversations WHERE channel='discord' AND external_id=?",
+                        (external_id,)).fetchone():
+                    continue  # already known -- the live path owns it
+                try:
+                    history = [m async for m in ch.history(limit=SWEEP_HISTORY_LIMIT,
+                                                           oldest_first=True)]
+                except discord.HTTPException as e:
+                    print(f"[warn] sweep: history fetch failed for #{ch} ({e!r})")
+                    continue
+                for message in history:
+                    ticket_player_id = ticket_question = None
+                    if message.author.bot:
+                        if bot.user and message.author.id == bot.user.id:
+                            continue
+                        ticket_player_id, ticket_question = _parse_ticket_king_card(message)
+                        if not ticket_player_id and not ticket_question:
+                            continue  # unrelated bot chatter
+                    else:
+                        if (message.content or "").startswith("!"):
+                            continue  # never replay commands from history
+                        if isinstance(message.author, discord.Member) and _is_staff(message.author):
+                            row = conn.execute(
+                                "SELECT id, status FROM conversations "
+                                "WHERE channel='discord' AND external_id=?",
+                                (external_id,)).fetchone()
+                            if row and row["status"] == "open":
+                                conn.execute("UPDATE conversations SET status='paused' WHERE id=?",
+                                             (row["id"],))
+                                conn.commit()
+                            continue  # staff already active in this ticket
+                    question_text = ticket_question or message.content
+                    if not question_text:
+                        if ticket_player_id:
+                            router.get_or_create_conversation(
+                                "discord", external_id, player_id=ticket_player_id)
+                        continue
+                    await _shadow_ingest(message, external_id, ticket_player_id,
+                                         question_text, react=False)
+                swept += 1
+        print(f"[info] shadow sweep complete -- {swept} live ticket channel(s) ingested")
+    except Exception as e:
+        print(f"[warn] shadow sweep failed ({e!r})")
+
+
 @bot.event
 async def on_ready():
     print(f"[info] logged in as {bot.user} (id={bot.user.id})")
+    # Shadow live-data sweep (John 2026-07-08): catch up on tickets that opened
+    # while the bot was offline so Ticket Review mirrors the live server at all
+    # times. Runs once per connect; idempotent (known channels are skipped).
+    if app_config.DISCORD_SHADOW_MODE and DISCORD_TICKETS_CATEGORY_ID:
+        bot.loop.create_task(_sweep_live_tickets())
 
 
 @bot.event
@@ -183,70 +334,7 @@ async def on_message(message: discord.Message):
         return
 
     if app_config.DISCORD_SHADOW_MODE:
-        # Phase 6 live-shadow path. Ingest the ticket and run the router so it shows up
-        # in the dashboard feed exactly like a live answer would, but post NOTHING in
-        # Discord -- instead persist a PENDING suggestion an admin can approve-and-send
-        # from the dashboard (the only Discord-write path). React 👀 so it's visible the
-        # bot is watching without it speaking yet.
-        conv_id = router.get_or_create_conversation("discord", external_id, player_id=ticket_player_id)
-
-        # SID-first ingest resolution (SPEC-01 §3.1): claimed SID (validated) beats an
-        # email found in the text, beats a Mongo-validated body scan; record which
-        # method won in sid_source. Best-effort: Mongo down -> stays NULL, never fatal.
-        sid_resolved = False
-        try:
-            m = re.search(r"[\w.+-]+@[\w-]+\.[\w.-]+", question_text or "")
-            sid, sid_source = sid_lookup.resolve_from_ticket(
-                claimed_sid=ticket_player_id, email=(m.group(0) if m else None),
-                body_text=question_text)
-            if sid:
-                # first resolution wins: never clobber a row something already resolved
-                # (sid_source set); DO replace the raw unvalidated card id if present.
-                conn.execute(
-                    "UPDATE conversations SET player_id=?, sid_source=? "
-                    "WHERE id=? AND sid_source IS NULL",
-                    (sid, sid_source, conv_id))
-                conn.commit()
-                sid_resolved = True
-            else:
-                row = conn.execute("SELECT player_id, sid_source FROM conversations WHERE id=?",
-                                   (conv_id,)).fetchone()
-                sid_resolved = bool(row and row["sid_source"])  # resolved on an earlier message
-        except Exception as e:
-            print(f"[warn] ingest SID lookup failed ({e!r})")
-
-        router._log_message(conv_id, "user", None, question_text)
-        result = router.answer(question_text, conv_id)
-        # SID invalid/missing -> the (approved-before-send) reply also asks for the
-        # SID with the find-your-SID helper embedded (SPEC-01 §3.1). Ticket is never
-        # blocked -- it just lands with player_id NULL until the player answers.
-        reply_text = _with_sid_helper(result["text"], sid_resolved)
-
-        # Persist ONE pending suggestion per ticket (skip if this conversation already has
-        # an open one, so player follow-ups don't spawn duplicates in the review grid).
-        try:
-            existing = conn.execute(
-                "SELECT 1 FROM suggestions WHERE conversation_id=? AND status IN ('pending','approved')",
-                (conv_id,)).fetchone()
-            if not existing:
-                conn.execute(
-                    "INSERT INTO suggestions (conversation_id, source, question, suggested_answer, "
-                    "tier, retrieved_chunks, staff_answer, status) "
-                    "VALUES (?, 'discord', ?, ?, ?, ?, NULL, 'pending')",
-                    (conv_id, question_text, reply_text, result["tier"],
-                     json.dumps(result.get("chunks") or [], ensure_ascii=False)))
-                conn.commit()
-        except Exception as e:
-            print(f"[warn] couldn't persist live suggestion ({e!r})")
-
-        print(
-            f"[shadow] conv={conv_id} player_id={ticket_player_id!r} tier={result['tier']} "
-            f"escalate={result['escalate']} would_reply={result['text'][:150]!r}"
-        )
-        try:
-            await message.add_reaction("👀")
-        except discord.HTTPException as e:
-            print(f"[warn] couldn't add shadow-mode reaction ({e!r})")
+        await _shadow_ingest(message, external_id, ticket_player_id, question_text)
         return
 
     # New question outside a thread -> open our own thread, but only when no
