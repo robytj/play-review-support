@@ -35,18 +35,45 @@ Per weapon (rows grouped by class: AR / SMG / LMG / sniper / shotgun / pistol / 
 z-score composite `0.4·pick_rate + 0.3·kills_per_round + 0.2·win_delta + 0.1·HS rate`,
 reported alongside the raw columns — never instead of them.
 
-## 3. Defaults taken (flag if wrong)
+## 3. Decisions (confirmed by John 2026-07-08)
 
-1. **"Round" = one match.** Within-match phase split (early/mid/late by hit tick vs
-   match duration) is a v2 column set.
-2. **Modes**: `br` is the headline grid; `brRebirth`/`easyBR`/`tdm` available via flag,
-   each its own grid. `tutorial*`, `ftue`, `training`, `freeRoam` always excluded.
-3. **Season** = date window (`--days`, default 30) **split by buildVersion** — patch
-   boundaries never blend. Mongo `seasonId` attribution is v2.
-4. **Guns only** (`gun_*` ids); melee/grenades behind `--all-weapons`.
-5. **Exclusions**: `isBot` players, matches < 2 min, players with 0 hits;
-   cheater exclusion v1 = none (small %, noted), v2 = banned + hacker-score cohort.
-6. **Skill banding** v1 = winners (teamRank 1) vs all; v2 = Mongo MMR bands.
+1. **"Round" = one match.** Phase split is a possible v2 column set.
+2. **Modes**: **BR and TDM as separate grids** (mode selector). `tutorial*`, `ftue`,
+   `training`, `freeRoam` always excluded.
+3. **Season window: since 2026-06-09** (current season start), split by buildVersion.
+4. **Guns only** (`gun_*` ids).
+5. **AI players**: identifiable by id length — **AI ids are 5 digits, real players 16
+   digits**. Exclude by id length AND `isBot` (belt and braces).
+6. **Pick rate**: match data reportedly contains picked-items telemetry — the schema
+   probe must locate it; until found, pick rate = usage rate (dealt ≥1 hit), clearly
+   labelled. When found, both columns: **picked %** and **used %**.
+7. **Cheater exclusion: banned states + device bans + the hacker-score threshold
+   cohort** (responder's cached scores).
+8. **Skill banding: MMR** (`rank.stats.mrank` via Mongo) — best-effort/degradable;
+   high-band (top quartile) pick rate is a first-class column when resolvable.
+9. **Volume**: run a full scan first (per-day match counts since season start) to
+   size sampling; then on-demand compute with **X matches/day since date** sampling.
+10. **Metrics (MaskGun template)**: headline columns **K/D, Damage per match, Kills
+    per game**, plus Rounds % (pick/usage), HS per round, accuracy, kill distance,
+    win/top-3 delta, and the composite power score as a sort aid (raw grid is the
+    product; audience = the game design team planning next season's weapon balance).
+
+## 3a. Weapon Meta tab (responder dashboard — the delivery vehicle)
+
+New nav tab **Weapon Meta** (admin app, next to Diagnostics), on-demand compute:
+
+- **Controls**: mode (BR | TDM), since-date (default 2026-06-09), matches/day sample
+  size, build filter (default: all builds in window, grouped in results).
+- **Diagnostics panel** (per John: "set up all the diagnostics for this exercise
+  under that tab"): (a) GCS volume scan — matches/day since season start per mode;
+  (b) schema probe — weaponUses / damageStatMap / hit-event / picked-items discovery
+  on a handful of matches, types only; (c) exclusion counts — AI players, banned,
+  hacker-cohort, sub-2-min matches dropped in the last run.
+- **Run** uses the responder's existing background-job pattern (like cheater scans):
+  progress, cancel, results cached per parameter set.
+- **Results**: MaskGun-style grid (weapon image from the bundled catalog where ids
+  match, class grouping, headline K/D · Dmg/match · Kills/game), sortable columns,
+  CSV export of the full grid, per-build split view.
 
 ## 4. Pipeline
 
