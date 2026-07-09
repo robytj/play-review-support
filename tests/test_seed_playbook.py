@@ -63,3 +63,29 @@ def test_playbook_answers_stay_inside_known_capabilities():
     assert "can't recover" in guest and "link" in guest
     ban = by_title["Account banned — why it happens and how to appeal"]["answer"].lower()
     assert "fair play" in ban and "can't reverse" in ban
+
+
+# ------------------------------------------------- boot-time self-provisioning --
+
+def test_bootstrap_seeds_playbook_when_kb_degenerate(monkeypatch):
+    """app.main._bootstrap_chat_content(): empty/uncategorized KB -> playbook
+    seeded at boot (the 2026-07-09 degenerate-gate state self-heals). Railway
+    one-offs can't touch the volume's SQLite, so boot is the only safe place."""
+    from app import main as app_main
+    assert len(_playbook_rows()) == 0
+    app_main._bootstrap_chat_content()
+    assert len(_playbook_rows()) == 14
+    # healthy KB -> second boot does nothing (no duplicates)
+    app_main._bootstrap_chat_content()
+    assert len(_playbook_rows()) == 14
+
+
+def test_bootstrap_skips_baselines_without_mongo(monkeypatch):
+    import threading
+    from app import main as app_main
+    started = []
+    monkeypatch.delenv("MONGO_URI", raising=False)
+    monkeypatch.setattr(threading, "Thread",
+                        lambda *a, **k: started.append(k) or type("T", (), {"start": lambda s: None})())
+    app_main._bootstrap_chat_content()
+    assert started == []          # no Mongo -> no baseline thread

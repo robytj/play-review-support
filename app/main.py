@@ -21,11 +21,64 @@ app.include_router(partner_api.router)  # SPEC-10 SuperX player tickets, separat
 web_support.install(app)
 
 
+def _bootstrap_chat_content():
+    """Self-provision the data the chat agent depends on -- no exec-into-the-
+    container ops step (Railway one-offs are awkward: `railway run` executes
+    LOCALLY with injected env, so it can't touch the volume's SQLite file).
+
+    1. Scope-gate KB: if there are no published+categorized kb_articles (the
+       degenerate-gate state behind the 2026-07-09 purchase regression -- e.g.
+       right after a DB replace), seed the 14-article playbook. Idempotent,
+       team edits always win.
+    2. Highlight baselines: if player_baselines is empty and Mongo is
+       configured, build them in a background thread (sampled, AI-excluded) so
+       'top X%' compliments light up without a manual run. Only when EMPTY --
+       weekly refreshes stay explicit (scripts/build_player_baselines.py).
+    Both best-effort: a failure logs loudly and never blocks boot.
+    """
+    import os
+    import threading
+
+    conn = db.get_conn()
+    try:
+        n = conn.execute("SELECT COUNT(*) AS n FROM kb_articles "
+                         "WHERE status = 'published' AND category != ''").fetchone()["n"]
+        if n == 0:
+            print("[warn] bootstrap: no published+categorized kb_articles -- "
+                  "seeding the SupportKB playbook (scope gate depends on it)")
+            from scripts import seed_support_playbook
+            seed_support_playbook.main()
+    except Exception as e:
+        print(f"[error] bootstrap: playbook seeding failed ({e!r}) -- "
+              "the scope gate will run on its keyword fallback")
+
+    try:
+        n = conn.execute("SELECT COUNT(*) AS n FROM player_baselines").fetchone()["n"]
+        if n == 0 and os.environ.get("MONGO_URI"):
+            sample = os.environ.get("BASELINES_BOOT_SAMPLE", "1500")
+
+            def _build():
+                try:
+                    from scripts import build_player_baselines
+                    build_player_baselines.main(["--sample", sample])
+                except Exception as e:  # noqa: BLE001
+                    print(f"[error] bootstrap: baseline build failed ({e!r}) -- "
+                          "elite-fallback highlights stay active")
+
+            print(f"[info] bootstrap: player_baselines empty -- building in "
+                  f"background (sample {sample})")
+            threading.Thread(target=_build, name="baselines-bootstrap",
+                             daemon=True).start()
+    except Exception as e:
+        print(f"[error] bootstrap: baseline check failed ({e!r})")
+
+
 @app.on_event("startup")
 def _startup():
     db.init_db()
     for table in ("kb_articles", "canned", "answer_cache"):
         __import__("app.vectorstore", fromlist=["ensure_vec_table"]).ensure_vec_table(table)
+    _bootstrap_chat_content()
     # One service, not two (spec section 1) -- the Discord bot runs in this same
     # process/container so it shares this exact SQLite file, not a separate
     # Railway service with its own disk. No-ops if DISCORD_BOT_TOKEN is unset.

@@ -149,16 +149,25 @@ gate, and a degenerate centroid build was silent.
    centroid count, healthy flag) + `highlight_baselines` — a degenerate gate is
    dashboard-visible, never silent again.
 
-**Ops step still required on Railway (data fix, restores the good centroids):**
+**Ops step: NONE since the self-provisioning boot (see below) — the service
+seeds the playbook itself at startup whenever the KB is degenerate. NOTE:
+`railway run <cmd>` executes LOCALLY with injected env (and macOS has no
+`python`, only `python3`) — it can never write the volume's SQLite file. For a
+manual one-off inside the container use `railway ssh` instead:**
 ```bash
-railway run python scripts/seed_support_playbook.py   # idempotent, 14 published+categorized articles
-# then verify:
+railway ssh   # pick the SupportBot service, then inside the container:
+python scripts/seed_support_playbook.py
+python scripts/build_player_baselines.py --sample 2000   # weekly-ish refresh
+# verify from your Mac:
 curl -s -H "Authorization: Bearer $SUPPORT_SERVICE_API_KEY" \
-  https://<service>/api/dashboard/chat/health | jq .scope_gate
+  https://primebot.up.railway.app/api/dashboard/chat/health | jq .scope_gate
 # expect: {"backend": "centroid", "kb_centroids": >=1, "healthy": true}
 ```
-After any future DB replace/re-sync, re-run the seed + health check. (The gate
-also self-heals per process start once the articles exist — restart after seeding.)
+Boot self-provisioning (app/main.py `_bootstrap_chat_content`): on startup, if
+there are no published+categorized kb_articles the playbook is seeded
+automatically; if player_baselines is empty and MONGO_URI is set, baselines
+build in a background thread (BASELINES_BOOT_SAMPLE, default 1500). So after
+any DB replace: just redeploy/restart and check /chat/health.
 
 ## 9. Player highlights + PrimeRush flavor (2026-07-09)
 
