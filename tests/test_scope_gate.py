@@ -57,13 +57,17 @@ def test_centroid_classify_picks_best_label(monkeypatch):
     assert score == pytest.approx(1.0)
 
 
-def test_centroid_min_score_floor_means_out_of_scope(monkeypatch):
+def test_centroid_min_score_floor_means_unclear(monkeypatch):
+    # Below the confidence floor with no support signal -> 'unclear' (the engine
+    # offers the menu, no strike). It is NOT out_of_scope: that label is
+    # reserved for seed-similar red flags (2026-07-09 follow-up: "matches" and
+    # "test ?" were being deflected + striked).
     monkeypatch.setattr(embeddings, "is_using_fallback", lambda: False)
     monkeypatch.setattr(scope_gate, "_get_centroids",
                         lambda: {"smalltalk": _one_hot(0), "General": _one_hot(1)})
     monkeypatch.setattr(embeddings, "embed", lambda text: _one_hot(2))  # orthogonal
     label, score = scope_gate.classify("completely unrelated text")
-    assert label == "out_of_scope"
+    assert label == "unclear"
     assert score < config.SCOPE_GATE_MIN_SCORE
 
 

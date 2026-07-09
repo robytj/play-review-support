@@ -31,7 +31,8 @@ import secrets
 from datetime import date
 
 from app import (config, db, embeddings, flavor, highlights, intents, llm,
-                 player_context, router, scope_gate, ticketing, vectorstore)
+                 player_context, profile, router, scope_gate, ticketing,
+                 vectorstore)
 
 # ------------------------------------------------------------------- constants --
 
@@ -70,12 +71,42 @@ CROSS_SID_REFUSAL = ("I can only help with the account we verified in this chat 
                      "I can't look up or discuss any other player's account.")
 SMALLTALK_REPLY = ("Happy to chat! Support questions are where I really shine though "
                    "— what's going on in your game?")
-OOS_DEFLECTION = ("That one's outside my arena — I'm all about PrimeRush support: "
-                  "your account, purchases, matches, bugs. What's going on with "
-                  "your game?")
+# Deflection VARIANTS -- repeating the identical line twice in a row reads
+# robotic (2026-07-09 feedback). Picked by strike count; semantics identical.
+OOS_DEFLECTIONS = (
+    ("That one's outside my arena — I'm all about PrimeRush support: your "
+     "account, purchases, matches, bugs. What's going on with your game?"),
+    ("Still me, still PrimeRush-only! I can dig into your account, purchases, "
+     "matches, or a bug — which one can I take on?"),
+    ("I'd love to help, but my whole world is PrimeRush. Anything in-game I "
+     "can check for you — account, purchases, matches, a bug?"),
+)
+OOS_DEFLECTION = OOS_DEFLECTIONS[0]   # kept as the canonical first-strike line
 ABUSE_DEFLECTION = ("I get it — when something's broken it's genuinely maddening. "
                     "I'm here to fix your PrimeRush issue, so let's keep it civil: "
                     "what's going on?")
+UNCLEAR_MENU = "I want to get this right — which of these is closest?"
+MENU_CHIPS = ["My account", "My purchases", "My matches", "Report a bug"]
+PIPELINE_ERROR_TEXT = ("Ugh — something glitched on my side just now. I've logged "
+                       "it for the team. Mind trying that once more? If it keeps "
+                       "happening, say \"ticket\" and I'll raise it directly.")
+DEGRADED_DETAIL_NOTE = ("I couldn't verify your account in this chat, so I can't "
+                        "pull those details — start a New Chat with your SID and "
+                        "I'll have everything ready.")
+NO_STATS_NOTE = ("Your match record looks empty from here — a few finished matches "
+                 "in, it'll light up. If that seems wrong, tell me and I'll flag it.")
+# Bug intake (menu 'Report a bug' / tier-3 technical questions): gather what +
+# when/repro like a real support person, then file ONE well-formed ticket.
+BUG_START = ("Let's squash it \U0001F41E What happened — describe the bug as "
+             "best you can?")
+BUG_WHEN = ("Got it. Two more things: when does it happen — every time or only "
+            "sometimes? And what were you doing right before (your best guess at "
+            "steps to reproduce)?")
+BUG_FILE_OFFER = "Want me to file this as a ticket for the team?"
+BUG_CANCELLED = ("No worries — it's all here in the chat if you change your mind. "
+                 "What else can I do for you?")
+_BUG_CANCEL_WORDS = {"cancel", "nevermind", "never mind", "stop", "forget it",
+                     "skip", "exit", "quit"}
 STRIKES_GOODBYE = ("This doesn't seem to be about PrimeRush support, so I'll close this "
                    "chat here. Start a New Chat anytime you have a game issue — "
                    "I'll be right here!")
@@ -521,17 +552,32 @@ def handle_message(session_id: int, text: str) -> dict:
     _update(session_id, msg_count=session["msg_count"] + 1, last_activity_at=_now())
     session = _get(session_id)
 
-    state = session["state"]
-    if state == "ASK_GAME":
-        out = _handle_game_choice(session, text)
-    elif state == "ASK_SID":
-        out = _handle_sid_text(session, text)
-    elif state == "CONFIRM_NAME":
-        out = _handle_confirm_name(session, text)
-    elif state == "RATING":
-        out = _handle_rating(session, text)
-    else:  # ISSUE_LOOP
-        out = _issue_loop(session, text)
+    # NEVER-500 guard (2026-07-09: a tier-2 API failure bubbled to the player as
+    # 'Error 500 -- non-JSON response'). Unexpected exceptions become a graceful
+    # in-character message + full traceback in the logs + an intent-log row; the
+    # session stays alive. Intentional signals still propagate.
+    try:
+        state = session["state"]
+        if state == "ASK_GAME":
+            out = _handle_game_choice(session, text)
+        elif state == "ASK_SID":
+            out = _handle_sid_text(session, text)
+        elif state == "CONFIRM_NAME":
+            out = _handle_confirm_name(session, text)
+        elif state == "RATING":
+            out = _handle_rating(session, text)
+        else:  # ISSUE_LOOP
+            out = _issue_loop(session, text)
+    except (SessionClosed, SessionNotFound):
+        raise
+    except Exception:
+        import traceback
+        print(f"[error] chat: pipeline crashed on session {session_id} "
+              f"(message: {text[:120]!r})")
+        traceback.print_exc()
+        profile.log_intent(session_id, session["sid"], "crash", text)
+        out = [_add_msg(session_id, "bot", "text", PIPELINE_ERROR_TEXT,
+                        {"error": True})]
     return _result(session_id, [user_msg] + out)
 
 
@@ -605,19 +651,24 @@ def _extract_sid_token(text: str) -> str | None:
 
 def _handle_sid_text(session, text: str) -> list[dict]:
     token = _extract_sid_token(text)
+    # A SID-shaped token means a real lookup is about to happen -- the natural
+    # beat for one PrimeRush fact/joke while the player waits (John 2026-07-09:
+    # "give me jokes during SID lookups"). Same picker/rate limits as the issue
+    # loop; retries without a token stay flavor-free (don't joke at a typo).
+    pre = _flavor_msgs(session, _meta(session)) if token else []
     ctx = player_context.get_player_context(token) if token else None
     if ctx:
-        return _found_player(session, ctx)
+        return pre + _found_player(session, ctx)
 
     attempts = session["sid_attempts"] + 1
     _update(session["id"], sid_attempts=attempts)
     session = _get(session["id"])
     if attempts < MAX_SID_TEXT_ATTEMPTS:
-        return [_add_msg(session["id"], "bot", "text", SID_RETRY_TEXT)]
+        return pre + [_add_msg(session["id"], "bot", "text", SID_RETRY_TEXT)]
     if attempts == MAX_SID_TEXT_ATTEMPTS:
-        return [_add_msg(session["id"], "bot", "text", SID_IMAGE_OFFER,
-                         {"offer_image": True})]
-    return _enter_degraded(session)
+        return pre + [_add_msg(session["id"], "bot", "text", SID_IMAGE_OFFER,
+                               {"offer_image": True})]
+    return pre + _enter_degraded(session)
 
 
 def _found_player(session, ctx) -> list[dict]:
@@ -689,34 +740,57 @@ def _recognition(session) -> list[dict]:
         return [_add_msg(session["id"], "bot", "text",
                          f"Thanks, {session['player_name'] or 'there'}! {ISSUE_PROMPT}")]
 
+    # Cross-session memory (app/profile.py): have we met this SID before? A
+    # returning player gets a welcome-back + a callback to their last topic,
+    # and must hear something NEW -- last visit's highlight metric is excluded
+    # and already-used flavor lines carry over into this session's no-repeat set.
+    prof = profile.visit(ctx.sid, session["id"])
+    returning = prof["returning"]
+
     # Login-time highlight precompute (app/highlights.py): unique-player facts,
     # computed ONCE from the already-fetched context and parked on the session
     # meta. The best percentile-backed line upgrades the recognition highlight;
     # the rest drip out as "while I check that" flavor during the issue loop.
     top_line = None
+    hl = []
+    meta = _meta(session)
+    if returning:
+        meta["returning"] = True
+        meta["visits"] = prof["visits"]
+    if prof["used_flavor"]:
+        meta["flavor_used"] = list(prof["used_flavor"])   # no repeats across sessions
     if getattr(config, "CHAT_HIGHLIGHTS_ENABLED", True):
+        exclude = {prof["last_highlight_metric"]} if prof["last_highlight_metric"] else None
         try:
-            hl = highlights.compute_highlights(ctx)
+            hl = highlights.compute_highlights(ctx, exclude=exclude)
         except Exception as e:
             print(f"[warn] chat: highlight precompute failed ({e!r})")
             hl = []
         if hl:
-            meta = _meta(session)
             meta["highlights"] = [h["line"] for h in hl]
             meta["highlights_used"] = 0
-            _save_meta(session["id"], meta)
             if hl[0]["top_pct"]:            # only percentile-backed claims may
                 top_line = hl[0]["line"]    # upgrade the recognition line
                 meta["highlights_used"] = 1
-                _save_meta(session["id"], meta)
+            profile.set_highlight_metric(ctx.sid, hl[0]["metric"])
+    _save_meta(session["id"], meta)
 
+    # Thanks cadence: always on a first visit; on return visits only every 3rd
+    # (a thank-you every single time stops sounding like one).
     thanks = _supporter_thanks(ctx, session["id"])
+    if returning and prof["visits"] % 3 != 0:
+        thanks = None
     facts = {
         "player_name": ctx.nickname,
         "playing_since": ctx.playing_since,
         "matches_played": ctx.matches_played,
         "highlight": top_line or _pick_highlight(ctx.stats),
     }
+    last_topic = profile.topic_label(prof["last_topic"]) if returning else None
+    if returning:
+        facts["returning"] = "yes"
+        if last_topic:
+            facts["last_topic"] = last_topic
     if thanks:
         # Haiku only ever sees the band word -- no counts/amounts exist anywhere
         # in its prompt, so the model cannot leak figures (Package A hard rule).
@@ -727,20 +801,30 @@ def _recognition(session) -> list[dict]:
     except Exception as e:
         print(f"[warn] chat: recognition phrasing failed, using template ({e!r})")
     if not text:
-        bits = []
-        if facts["playing_since"]:
-            bits.append(f"thanks for playing with us since {facts['playing_since']}")
-        if facts["matches_played"]:
-            bits.append(f"{facts['matches_played']:,} matches in")
-        line = (f"{ctx.nickname}, " + " — ".join(bits) + "!") if bits \
-            else f"Great to see you, {ctx.nickname}!"
+        if returning:
+            line = f"Welcome back, {ctx.nickname} — good to see you again!"
+            if last_topic:
+                line += f" Last time we looked at {last_topic} — hope that's sorted."
+        else:
+            bits = []
+            if facts["playing_since"]:
+                bits.append(f"thanks for playing with us since {facts['playing_since']}")
+            if facts["matches_played"]:
+                bits.append(f"{facts['matches_played']:,} matches in")
+            line = (f"{ctx.nickname}, " + " — ".join(bits) + "!") if bits \
+                else f"Great to see you, {ctx.nickname}!"
         if facts["highlight"]:
             line += f" And {facts['highlight']} — seriously impressive."
         if thanks:
             line += f" {thanks}"
         text = line
     rec = _add_msg(session["id"], "bot", "recognition", text, {"facts": facts})
-    prompt = _add_msg(session["id"], "bot", "text", ISSUE_PROMPT)
+    if returning:   # regulars get the menu as chips -- one tap to their usual
+        prompt = _add_msg(session["id"], "bot", "chips",
+                          "So — what can I do for you today?",
+                          {"chips": list(MENU_CHIPS)})
+    else:
+        prompt = _add_msg(session["id"], "bot", "text", ISSUE_PROMPT)
     return [rec, prompt]
 
 
@@ -827,6 +911,7 @@ def _flavor_msgs(session, meta: dict) -> list[dict]:
             return []
         kind, key, line = picked
         meta.setdefault("flavor_used", []).append(key)
+        profile.add_used_flavor(session["sid"], [key])   # no repeats across visits
     meta["flavor_shown"] = n + 1
     meta["flavor_last_msg"] = session["msg_count"]
     _save_meta(sid, meta)
@@ -870,46 +955,79 @@ def _issue_loop(session, text: str) -> list[dict]:
             return [_add_msg(sid, "bot", "text", ESCALATE_DECLINED)]
         # fall through: treat as a new question
 
+    # 3.5 bug-report intake in flight (what -> when/repro -> confirm -> ticket)
+    if meta.get("bug_flow"):
+        out = _bug_flow_step(session, meta, text)
+        if out is not None:
+            return out
+        meta = _meta(_get(sid))   # flow exited (intent switch) -- reload + continue
+
     # 4. cross-player SID guard (hard, SPEC-08 §3.2) -- raw-text scan, uppercase only
     foreign = [t for t in SID_TOKEN_RE.findall(text or "") if t != (session["sid"] or "")]
     if foreign:
         return [_add_msg(sid, "bot", "text", CROSS_SID_REFUSAL,
                          {"guard": "cross_sid"})]
 
-    # 5. deterministic data intents BEFORE the gate (2026-07-09 regression fix:
-    #    a verified player asking about their own purchases/ban is in scope by
+    # 5. deterministic intents BEFORE the gate (2026-07-09 regression fix: a
+    #    verified player asking about their own account is in scope by
     #    definition -- the gate must never eat these, however degenerate its
     #    centroids get). Typo-tolerant matching via app/intents.py, with the
     #    original regexes kept as the fast path. One thing still outranks them:
     #    an EXPLICIT human ask ("refund me, get me a human") always escalates.
-    wants_purchases = bool(_PURCHASE_RE.search(text)) or intents.has_purchase_intent(text)
+    menu = intents.menu_intent(text)
+    wants_purchases = (menu == "purchases" or bool(_PURCHASE_RE.search(text))
+                       or intents.has_purchase_intent(text))
     wants_ban = bool(_BAN_RE.search(text)) or intents.has_ban_intent(text)
-    if (wants_purchases or wants_ban) and scope_gate.is_human_request(text):
+    if (menu or wants_purchases or wants_ban) and scope_gate.is_human_request(text):
+        profile.log_intent(sid, session["sid"], "human_request", text)
         return _escalate(session, question=text, reason="player asked for a human")
     ctx = None
-    if session["sid"] and (wants_purchases or wants_ban):
+    if session["sid"] and (menu or wants_purchases or wants_ban):
         ctx = player_context.get_player_context(session["sid"])
     if wants_purchases and ctx and ctx.transactions is not None:
+        profile.log_intent(sid, session["sid"], "purchases", text)
         return _flavor_msgs(session, meta) + _purchase_reply(session, meta, ctx)
     if wants_ban and ctx and (ctx.is_banned or ctx.chat_banned):
+        profile.log_intent(sid, session["sid"], "ban", text)
         return _ban_reply(session, ctx, text)
+    if menu == "account":
+        profile.log_intent(sid, session["sid"], "account", text)
+        if ctx is None:
+            return [_add_msg(sid, "bot", "text", DEGRADED_DETAIL_NOTE)]
+        return _flavor_msgs(session, meta) + _account_reply(session, meta, ctx)
+    if menu == "matches":
+        profile.log_intent(sid, session["sid"], "matches", text)
+        if ctx is None:
+            return [_add_msg(sid, "bot", "text", DEGRADED_DETAIL_NOTE)]
+        return _flavor_msgs(session, meta) + _matches_reply(session, meta, ctx)
+    if menu == "bugs":
+        profile.log_intent(sid, session["sid"], "bug", text)
+        return _bug_flow_start(session, meta)
 
     # 6. scope gate (SPEC-08 §3.1)
     label, score = scope_gate.classify(text)
     if label in ("out_of_scope", "abuse"):
         strikes = session["strikes"] + 1
         _update(sid, strikes=strikes)
+        profile.log_intent(sid, session["sid"], label, text)
         if strikes >= config.SCOPE_GATE_STRIKE_LIMIT:
             _update(sid, state="ENDED", ended_at=_now(), end_reason="strikes")
             return [_add_msg(sid, "bot", "text", STRIKES_GOODBYE,
                              {"gate": label, "strikes": strikes})]
-        deflection = ABUSE_DEFLECTION if label == "abuse" else OOS_DEFLECTION
+        deflection = ABUSE_DEFLECTION if label == "abuse" \
+            else OOS_DEFLECTIONS[(strikes - 1) % len(OOS_DEFLECTIONS)]
         return [_add_msg(sid, "bot", "text", deflection,
                          {"gate": label, "strikes": strikes})]
     if label == "smalltalk":
         return [_add_msg(sid, "bot", "text", SMALLTALK_REPLY, {"gate": label})]
     if label == "human_request":
+        profile.log_intent(sid, session["sid"], "human_request", text)
         return _escalate(session, question=text, reason="player asked for a human")
+    if label == "unclear":
+        # Low confidence is a question, not an offence (no strike): offer the menu.
+        profile.log_intent(sid, session["sid"], "unclear", text)
+        return [_add_msg(sid, "bot", "chips", UNCLEAR_MENU,
+                         {"chips": list(MENU_CHIPS), "menu": True})]
 
     # 7. clarify round in flight? (one round max)
     question = text
@@ -928,12 +1046,22 @@ def _issue_loop(session, text: str) -> list[dict]:
     # 8. gate-label backstops for the data intents (the gate can still route a
     #    purchase/ban phrasing the lexicons missed)
     if label == "Payments & Purchases" and ctx and ctx.transactions is not None:
+        profile.log_intent(sid, session["sid"], "purchases", text)
         return _flavor_msgs(session, meta) + _purchase_reply(session, meta, ctx)
     if (ctx and (ctx.is_banned or ctx.chat_banned) and label == "Bans & Fair Play"):
+        profile.log_intent(sid, session["sid"], "ban", text)
         return _ban_reply(session, ctx, text)
 
+    # 8.5 vague one-worders with no signal anywhere ("test ?") -> menu, not the
+    #     router (escalating "test ?" as a ticket would be silly).
+    if label == config.KB_DEFAULT_CATEGORY and len(re.findall(r"[a-zA-Z]+", text)) <= 2:
+        profile.log_intent(sid, session["sid"], "unclear", text)
+        return [_add_msg(sid, "bot", "chips", UNCLEAR_MENU,
+                         {"chips": list(MENU_CHIPS), "menu": True})]
+
     # 9. tiered router (SPEC-08 §3.4)
-    return _route(session, meta, question)
+    profile.log_intent(sid, session["sid"], f"kb:{label}", text)
+    return _route(session, meta, question, label=label)
 
 
 def _purchase_reply(session, meta: dict, ctx) -> list[dict]:
@@ -983,6 +1111,190 @@ def _purchase_reply(session, meta: dict, ctx) -> list[dict]:
                    {"intent": "purchases", "summary": {k: v for k, v in t.items()
                                                        if k != "recent"}})
     return [msg] + _offer_csat(session, meta, "purchases")
+
+
+# --------------------------------------------------- account / matches summaries --
+
+_RANK_TIERS = {"top 1%": "Legend tier", "top 5%": "Veteran tier",
+               "top 10%": "Hardened Regular", "top 25%": "Rising"}
+
+
+def _account_reply(session, meta: dict, ctx) -> list[dict]:
+    """'account' menu intent: tenure, level, standing -- with the precomputed
+    how-do-I-rank flourishes (age vs everyone else, best percentile as a rank)."""
+    age, age_pct = highlights.metric_detail(ctx, "account_age_days")
+    matches, m_pct = highlights.metric_detail(ctx, "matches_played")
+    lines = [f"Your account at a glance, {ctx.nickname} ({ctx.sid}):"]
+    if ctx.playing_since:
+        line = f"• With us since {ctx.playing_since}"
+        if age:
+            line += f" — {age:,.0f} days"
+        if age_pct:
+            line += f", older than {highlights._OLDER_THAN[age_pct]} of all PrimeRush accounts"
+        lines.append(line)
+    if ctx.level is not None:
+        lines.append(f"• Level {ctx.level}")
+    if matches:
+        line = f"• {matches:,.0f} matches played"
+        if m_pct:
+            line += f" — {m_pct} of the player base"
+        lines.append(line)
+    standing = ctx.state or "Active"
+    lines.append(f"• Standing: {standing}"
+                 + (" (chat restricted)" if ctx.chat_banned else ""))
+    if ctx.email_masked:
+        lines.append(f"• Email on file: {ctx.email_masked}")
+    try:
+        hl = highlights.compute_highlights(ctx, limit=1)
+    except Exception:
+        hl = []
+    if hl and hl[0]["top_pct"] in _RANK_TIERS:
+        lines.append(f"If accounts had ranks, yours would be "
+                     f"{_RANK_TIERS[hl[0]['top_pct']]} — {hl[0]['line']}.")
+    msg = _add_msg(session["id"], "bot", "text", "\n".join(lines),
+                   {"intent": "account"})
+    return [msg] + _offer_csat(session, meta, "account summary")
+
+
+def _matches_reply(session, meta: dict, ctx) -> list[dict]:
+    """'matches' menu intent: the combat record. Kills-per-match stands in for
+    K/D (deaths aren't on user.stats); per-weapon splits honestly flagged as
+    not-available-here (they live in the match recorder, not brx_main)."""
+    s = ctx.stats or {}
+    if not s.get("rows"):
+        msg = _add_msg(session["id"], "bot", "text", NO_STATS_NOTE,
+                       {"intent": "matches"})
+        return [msg] + _offer_csat(session, meta, "match stats")
+    kills = s.get("totalKills") or 0
+    wins, losses = s.get("totalWins") or 0, s.get("totalLosses") or 0
+    lines = [f"Your combat record, {ctx.nickname}:"]
+    if ctx.matches_played:
+        line = f"• {ctx.matches_played:,} matches — {wins:,} wins / {losses:,} losses"
+        if wins + losses > 0:   # raw ratio always shows; percentile only when it means something
+            _, wr_pct = highlights.metric_detail(ctx, "win_rate")
+            line += (f" ({wins / (wins + losses):.0%} win rate"
+                     + (f", {wr_pct} in the game" if wr_pct else "") + ")")
+        lines.append(line)
+    if kills:
+        line = f"• {kills:,} kills"
+        if ctx.matches_played:
+            line += f" — {kills / ctx.matches_played:.1f} per match"
+        hs_kills = s.get("totalHeadshotKills") or 0
+        if hs_kills:
+            _, hs_pct = highlights.metric_detail(ctx, "headshot_rate")
+            line += (f", {hs_kills / kills:.0%} headshots"
+                     + (f" ({hs_pct} accuracy)" if hs_pct else ""))
+        lines.append(line)
+    streak, st_pct = highlights.metric_detail(ctx, "longest_kill_streak")
+    if streak:
+        lines.append(f"• Longest kill streak: {streak:,.0f}"
+                     + (f" — {st_pct} of all players" if st_pct else ""))
+    extras = []
+    if s.get("matchMvpCount"):
+        extras.append(f"{s['matchMvpCount']:,} MVPs")
+    hours, _ = highlights.metric_detail(ctx, "hours_played")
+    if hours:
+        extras.append(f"~{hours:,.0f}h in the arena")
+    if extras:
+        lines.append("• " + " · ".join(extras))
+    lines.append("(All-mode rollup — I don't have per-weapon splits on your "
+                 "account record here.)")
+    msg = _add_msg(session["id"], "bot", "text", "\n".join(lines),
+                   {"intent": "matches"})
+    return [msg] + _offer_csat(session, meta, "match stats")
+
+
+# ------------------------------------------------------------- bug-report intake --
+
+def _bug_flow_start(session, meta: dict, prefill_what: str | None = None) -> list[dict]:
+    """Guided intake: WHAT happened -> WHEN/steps to reproduce -> confirm ->
+    ticket. A real support person gathers the details BEFORE filing."""
+    sid = session["id"]
+    if prefill_what:
+        meta["bug_flow"] = {"stage": "when", "what": prefill_what[:400]}
+        _save_meta(sid, meta)
+        return [_add_msg(sid, "bot", "text",
+                         "That sounds like a bug worth filing — let me grab the "
+                         "details. " + BUG_WHEN, {"bug_flow": "when"})]
+    meta["bug_flow"] = {"stage": "what"}
+    _save_meta(sid, meta)
+    return [_add_msg(sid, "bot", "text", BUG_START, {"bug_flow": "what"})]
+
+
+def _bug_summary(flow: dict, ctx) -> tuple[str, str]:
+    """(player-visible summary, structured ticket question)."""
+    what = _clip(flow.get("what"), 400) or "(not described)"
+    when = _clip(flow.get("when"), 400) or "(not described)"
+    env_bits = []
+    if ctx and ctx.build_version:
+        env_bits.append(f"build {ctx.build_version}")
+    if ctx and ctx.location:
+        env_bits.append(f"region {ctx.location}")
+    env = " · ".join(env_bits)
+    visible = ("Here's what I've got:\n"
+               f"• What happens: {what}\n"
+               f"• When / how to reproduce: {when}"
+               + (f"\n• Your setup: {env} (pulled from your account — no need to type it)"
+                  if env else ""))
+    ticket = (f"[player bug report]\nWhat: {what}\nWhen/repro: {when}"
+              + (f"\nEnvironment: {env}" if env else ""))
+    return visible, ticket
+
+
+def _bug_flow_step(session, meta: dict, text: str) -> list[dict] | None:
+    """One turn of the intake. Returns None when the player clearly switched
+    topics mid-flow (caller re-processes the message normally)."""
+    sid = session["id"]
+    flow = meta.get("bug_flow") or {}
+    stage = flow.get("stage")
+    t = (text or "").strip().lower().rstrip("!.")
+
+    # changed their mind / switched topic -- exit gracefully, like a person would
+    if stage in ("what", "when") and (
+            intents.menu_intent(text) not in (None, "bugs")
+            or intents.has_purchase_intent(text)):
+        meta.pop("bug_flow", None)
+        _save_meta(sid, meta)
+        return None
+    if t in _BUG_CANCEL_WORDS or (stage != "confirm" and _is_no(text)):
+        meta.pop("bug_flow", None)
+        _save_meta(sid, meta)
+        return [_add_msg(sid, "bot", "text", BUG_CANCELLED)]
+
+    if stage == "what":
+        flow.update(stage="when", what=text[:400])
+        meta["bug_flow"] = flow
+        _save_meta(sid, meta)
+        return [_add_msg(sid, "bot", "text", BUG_WHEN, {"bug_flow": "when"})]
+
+    if stage == "when":
+        flow.update(stage="confirm", when=text[:400])
+        ctx = player_context.get_player_context(session["sid"]) if session["sid"] else None
+        visible, ticket = _bug_summary(flow, ctx)
+        flow["ticket"] = ticket
+        meta["bug_flow"] = flow
+        _save_meta(sid, meta)
+        return [_add_msg(sid, "bot", "text", visible, {"bug_flow": "confirm"}),
+                _add_msg(sid, "bot", "chips", BUG_FILE_OFFER,
+                         {"chips": ["Yes", "No"]})]
+
+    if stage == "confirm":
+        if _is_yes(text):
+            ticket = flow.get("ticket") or flow.get("what") or text
+            meta.pop("bug_flow", None)
+            _save_meta(sid, meta)
+            profile.log_intent(sid, session["sid"], "bug_filed", flow.get("what", ""))
+            return _escalate(session, question=ticket, reason="player bug report")
+        if _is_no(text):
+            meta.pop("bug_flow", None)
+            _save_meta(sid, meta)
+            return [_add_msg(sid, "bot", "text", BUG_CANCELLED)]
+        return [_add_msg(sid, "bot", "chips", BUG_FILE_OFFER,
+                         {"chips": ["Yes", "No"]})]
+
+    meta.pop("bug_flow", None)   # unknown stage -- self-heal
+    _save_meta(sid, meta)
+    return None
 
 
 def _pick_ban_response(conn, text: str, ctx) -> tuple[int | None, str]:
@@ -1044,7 +1356,7 @@ def _offer_csat(session, meta: dict, last_question: str) -> list[dict]:
                      {"chips": ["Yes", "No"]})]
 
 
-def _route(session, meta: dict, question: str) -> list[dict]:
+def _route(session, meta: dict, question: str, label: str | None = None) -> list[dict]:
     sid = session["id"]
 
     # Budgets first (SPEC-08 §3.6): once Tier-2 is exhausted (per-session or the
@@ -1063,7 +1375,19 @@ def _route(session, meta: dict, question: str) -> list[dict]:
             return [msg] + _offer_csat(session, meta, question)
         return _escalate(session, question=question, reason="tier-2 budget exhausted")
 
-    res = router.suggest(question)  # pure -- no messages/metrics/cache side effects
+    # The tier cascade's only external call is the tier-2 Claude generation --
+    # if it dies (API error, quota, network) that must NOT become a raw 500 at
+    # the player (2026-07-09 'bugs ?' incident). Escalate instead: a ticket
+    # with a human behind it beats an error page every time.
+    try:
+        res = router.suggest(question)  # pure -- no messages/metrics/cache side effects
+    except Exception as e:
+        import traceback
+        print(f"[error] chat: router.suggest failed on session {sid} ({e!r})")
+        traceback.print_exc()
+        profile.log_intent(sid, session["sid"], "crash", question)
+        return _escalate(session, question=question,
+                         reason=f"answer pipeline failed ({type(e).__name__})")
 
     if res["tier"] in (0, 1, 2):
         pre = []
@@ -1097,6 +1421,13 @@ def _route(session, meta: dict, question: str) -> list[dict]:
                 return [_add_msg(sid, "bot", "chips",
                                  "I want to make sure I get this right — is it one "
                                  "of these?", {"chips": titles, "clarify": True})]
+
+    # Technical question the KB couldn't answer -> that's probably a bug report.
+    # Gather what/when/repro FIRST, then file one well-formed ticket -- exactly
+    # what a good human agent would do instead of insta-escalating.
+    if label == "Technical Issues" and not meta.get("bug_flow"):
+        profile.log_intent(sid, session["sid"], "bug", question)
+        return _bug_flow_start(session, meta, prefill_what=question)
 
     return _escalate(session, question=question, reason="no confident KB answer (tier 3)")
 

@@ -89,6 +89,19 @@ def _v_matches(ctx):
     return ctx.matches_played or None
 
 
+def _v_account_age(ctx):
+    ct = getattr(ctx, "create_time", None)
+    if ct is None:
+        return None
+    from datetime import datetime, timezone
+    days = (datetime.now(timezone.utc) - ct).days
+    return days if days >= 1 else None
+
+
+# "top X%" claim -> "older than Y%" phrasing for tenure
+_OLDER_THAN = {"top 1%": "99%", "top 5%": "95%", "top 10%": "90%", "top 25%": "75%"}
+
+
 METRICS = {
     # metric: (value_fn, elite_threshold_for_fallback, line_fn)
     "longest_kill_streak": (_v_streak, 30, lambda v, p: (
@@ -112,6 +125,10 @@ METRICS = {
         f"{v:,.0f} matches played"
         + (f" — more than {p.removeprefix('top ')} of players have even started"
            if p else " — dedication"))),
+    "account_age_days": (_v_account_age, 365, lambda v, p: (
+        f"your account is {v:,.0f} days old"
+        + (f" — older than {_OLDER_THAN[p]} of all PrimeRush accounts" if p
+           else " — proper old guard"))),
 }
 
 
@@ -163,16 +180,19 @@ def _top_pct(value: float, quantiles: dict[int, float]) -> str | None:
 
 # ------------------------------------------------------------------ public API --
 
-def compute_highlights(ctx, limit: int = 3) -> list[dict]:
+def compute_highlights(ctx, limit: int = 3, exclude: set[str] | None = None) -> list[dict]:
     """Ranked unique-player facts: [{'metric','value','top_pct','line'}].
     Percentile-backed lines rank first (rarest claim wins); elite-fallback lines
     only fill in when no baseline row exists for that metric. Empty list when
-    the player has nothing highlight-worthy -- never invent."""
+    the player has nothing highlight-worthy -- never invent. `exclude` drops
+    metrics the player already heard (returning visits say something NEW)."""
     if ctx is None:
         return []
     baselines = load_baselines()
     scored = []
     for metric, (value_fn, elite_at, line_fn) in METRICS.items():
+        if exclude and metric in exclude:
+            continue
         try:
             v = value_fn(ctx)
         except Exception:
@@ -194,3 +214,19 @@ def compute_highlights(ctx, limit: int = 3) -> list[dict]:
         out.append({"metric": metric, "value": v, "top_pct": claim,
                     "line": line_fn(v, claim)})
     return out
+
+
+def metric_detail(ctx, metric: str) -> tuple[float | None, str | None]:
+    """(value, top_pct|None) for ONE metric -- used by the account/matches
+    summaries to decorate individual lines ('older than 95% of accounts')."""
+    entry = METRICS.get(metric)
+    if not entry or ctx is None:
+        return None, None
+    try:
+        v = entry[0](ctx)
+    except Exception:
+        return None, None
+    if v is None:
+        return None, None
+    base = load_baselines().get(metric)
+    return v, (_top_pct(v, base["quantiles"]) if base else None)

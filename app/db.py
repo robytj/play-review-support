@@ -380,6 +380,39 @@ def _migrate(conn):
     )
     conn.commit()
 
+    # Cross-session player memory + learn-from-usage log (app/profile.py).
+    # player_profile: one row per verified SID -- visit counts, topic counters,
+    # which highlight/flavor lines they've heard (so return visits say something
+    # NEW). chat_intent_log: append-only record of what players actually ask
+    # for; the dashboard mines it to grow the KB/canned set from real usage.
+    conn.executescript(
+        """
+        CREATE TABLE IF NOT EXISTS player_profile (
+            sid TEXT PRIMARY KEY,
+            first_seen_at TEXT DEFAULT (datetime('now')),
+            last_seen_at TEXT DEFAULT (datetime('now')),
+            session_count INTEGER NOT NULL DEFAULT 0,
+            last_session_id INTEGER,
+            last_topic TEXT,
+            last_topic_at TEXT,
+            last_highlight_metric TEXT,
+            used_flavor_json TEXT DEFAULT '[]',
+            topics_json TEXT DEFAULT '{}'
+        );
+        CREATE TABLE IF NOT EXISTS chat_intent_log (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            session_id INTEGER NOT NULL,
+            sid TEXT,
+            intent TEXT NOT NULL,
+            question TEXT,
+            created_at TEXT DEFAULT (datetime('now'))
+        );
+        CREATE INDEX IF NOT EXISTS idx_chat_intent_log_sid ON chat_intent_log(sid);
+        CREATE INDEX IF NOT EXISTS idx_chat_intent_log_intent ON chat_intent_log(intent);
+        """
+    )
+    conn.commit()
+
     _seed_ban_responses(conn)
     _seed_sid_helper(conn)
 

@@ -183,7 +183,7 @@ def test_highlights_compute_ranks_percentiles_over_fallback():
 
 
 def test_highlights_empty_for_blank_player():
-    ctx = make_ctx(stats={"rows": 0}, matches_played=None)
+    ctx = make_ctx(stats={"rows": 0}, matches_played=None, create_time=None)
     assert highlights.compute_highlights(ctx) == []
 
 

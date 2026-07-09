@@ -119,6 +119,55 @@ def has_ban_intent(text: str) -> bool:
     return _match(text, BAN_WORDS, BAN_FUZZY, BAN_PHRASES)
 
 
+# Explicit asks -- always route to the menu handler, any message length.
+MENU_PHRASES_ALWAYS = {
+    "account": ("account summary", "account info", "account details",
+                "how old is my account", "about my account"),
+    "matches": ("match history", "my kd", "kd ratio", "k/d",
+                "how good am i", "my win rate"),
+    "bugs": ("report a bug", "found a bug", "report bug", "found a glitch",
+             "report a glitch", "report an issue", "i have a bug",
+             "theres a bug", "there's a bug"),
+}
+# Generic phrasings -- only when the whole message is SHORT (a menu-style tap
+# like "my account", "my stats"). Inside a longer question ("how do I recover
+# my account login?") these words belong to the KB pipeline, not the menu.
+MENU_PHRASES_SHORT = {
+    "account": ("my account", "my profile", "since when"),
+    "matches": ("my stats", "my matches", "my record", "my performance",
+                "win rate", "my kills"),
+    "bugs": (),
+}
+_MENU_SINGLE_WORDS = {
+    "account": "account", "purchases": "purchases", "purchase": "purchases",
+    "matches": "matches", "stats": "matches", "match": "matches",
+    "bugs": "bugs", "bug": "bugs", "glitch": "bugs",
+}
+_MENU_SHORT_MAX_TOKENS = 5
+
+
+def menu_intent(text: str) -> str | None:
+    """The recognition prompt offers 'purchases, account, matches, bugs' -- this
+    catches players taking the menu literally: short menu-word messages
+    ('matches', 'bugs ?') and common phrasings ('my stats', 'report a bug').
+    Long free-form questions deliberately DON'T match ('how do I recover my
+    account login?' should hit the KB first, not the summary card)."""
+    t = (text or "").lower()
+    for kind, phrases in MENU_PHRASES_ALWAYS.items():
+        if any(p in t for p in phrases):
+            return kind
+    tokens = _TOKEN_RE.findall(t)
+    if 0 < len(tokens) <= _MENU_SHORT_MAX_TOKENS:
+        for kind, phrases in MENU_PHRASES_SHORT.items():
+            if any(p in t for p in phrases):
+                return kind
+        if len(tokens) <= 3:
+            for tok in tokens:
+                if tok in _MENU_SINGLE_WORDS:
+                    return _MENU_SINGLE_WORDS[tok]
+    return None
+
+
 def support_concern_category(text: str) -> str | None:
     """Best-effort 'is this plainly a support concern?' detector for the scope
     gate's deflection veto. Returns one of config.KB_CATEGORIES or None -- unlike

@@ -33,7 +33,8 @@ AUTH = {"Authorization": "Bearer test-key"}
 _TABLES = ("chat_messages", "chat_sessions", "chat_usage", "suggestion_actions",
            "suggestions", "feedback", "messages", "ticket_events", "conversations",
            "metrics_daily", "kb_translations", "ticket_translations", "kb_articles",
-           "answer_cache", "canned", "tone_cache", "player_baselines")
+           "answer_cache", "canned", "tone_cache", "player_baselines",
+           "player_profile", "chat_intent_log")
 
 
 @pytest.fixture(autouse=True)

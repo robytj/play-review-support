@@ -180,3 +180,32 @@ turns in a row, never on ban replies. Recognition upgrades to percentile brags
 - Future feed: per-weapon/per-mode accuracy from the SPEC-11 match-recorder
   cache would unlock "top 1% accuracy with <gun> in <mode>" — add as new
   metrics in `app/highlights.METRICS` with their own baselines.
+
+## 10. Support intelligence round 2 (2026-07-09, after live testing)
+
+Live-test findings fixed:
+- **"bugs ?" returned Error 500**: `router.suggest`'s tier-2 Claude call had no
+  guard — any API failure crashed the request. Now: tier-2 failure ⇒ escalation
+  ticket ("answer pipeline failed"), and `handle_message` has a last-resort
+  never-500 guard (graceful in-character apology + full traceback in logs +
+  `crash` row in chat_intent_log). Check Railway logs for `[error] chat:` to
+  see the original 500's cause after deploying.
+- **"matches"/"test ?" deflected + striked**: sub-threshold gate results are now
+  `unclear` ⇒ menu chips (My account / My purchases / My matches / Report a
+  bug), never a strike. Deflections for real OOS now rotate 3 variants.
+
+New behavior:
+- **Menu intents**: account ⇒ tenure/level/standing summary with percentile
+  flourishes + rank tier; matches ⇒ combat record (kills/match stands in for
+  K/D — deaths aren't on user.stats; per-weapon splits honestly flagged as not
+  in brx_main); bugs ⇒ guided intake (what → when/repro → confirm) that files
+  ONE structured ticket with build/region auto-attached from the account.
+  Tier-3 Technical questions also flow into bug intake instead of insta-escalating.
+- **Cross-session memory** (`player_profile` + `chat_intent_log`, app/profile.py):
+  returning SIDs get "Welcome back" + last-topic callback + a DIFFERENT
+  highlight than last visit + menu chips; supporter thanks throttled to every
+  3rd visit; facts/jokes never repeat across visits. Intent log = the
+  learn-from-usage feed (dashboard can mine `chat_intent_log` for the next KB
+  articles/canned replies).
+- **SID-lookup flavor**: one fact/joke while the account lookup runs (only when
+  a SID-shaped token is present — never joking at a typo retry).

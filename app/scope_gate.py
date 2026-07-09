@@ -299,7 +299,11 @@ def classify(text: str) -> tuple[str, float]:
         if concern:
             return (concern, max(score, 0.5))
     if score < config.SCOPE_GATE_MIN_SCORE:
-        return ("out_of_scope", score)
+        # Nothing won confidently and no support signal either way. That's NOT
+        # the same as out-of-scope (2026-07-09 follow-up: "matches", "test ?"
+        # were deflected + striked): a real support person would ask, not shrug
+        # -- the engine turns 'unclear' into a menu, never a strike.
+        return ("unclear", score)
     return (label, score)
 
 
