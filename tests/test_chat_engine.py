@@ -55,7 +55,10 @@ def test_full_happy_path(client, start, say, known_player, monkeypatch):
 
     out = say(sid, "How do I recover my account login?")
     assert suggest_calls == ["How do I recover my account login?"]
-    answer = next(m for m in out["messages"] if m["role"] == "bot" and m["type"] == "text")
+    # tier-2 turns may open with a while-you-wait flavor line -- the answer is
+    # the bot text message that carries a tier
+    answer = next(m for m in out["messages"]
+                  if m["role"] == "bot" and m["type"] == "text" and "tier" in m["meta"])
     assert answer["content"] == "Open Settings > Account and tap Link."
     assert answer["meta"]["tier"] == 2
     csat = next(m for m in out["messages"] if m["type"] == "csat")
@@ -319,7 +322,8 @@ def test_clarify_band_offers_chips_once(issue_session, say, known_player, monkey
     assert out["state"] == "ISSUE_LOOP"
 
     out = say(sid, "Recovering a lost account")            # chip echoes back as user text
-    answer = next(m for m in out["messages"] if m["role"] == "bot" and m["type"] == "text")
+    answer = next(m for m in out["messages"]
+                  if m["role"] == "bot" and m["type"] == "text" and "tier" in m["meta"])
     assert answer["content"] == "answer"
     assert calls[1] == "my account thing is broken somehow — Recovering a lost account"
 

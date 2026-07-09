@@ -364,6 +364,22 @@ def _migrate(conn):
             conn.execute(f"ALTER TABLE chat_sessions ADD COLUMN {col} {decl}")
             conn.commit()
 
+    # Player-highlights population baselines (app/highlights.py): percentile
+    # quantiles per metric, written by scripts/build_player_baselines.py from a
+    # sampled brx_main aggregation. Read-only at chat time; empty table = the
+    # feature degrades to its static elite-fallback thresholds.
+    conn.executescript(
+        """
+        CREATE TABLE IF NOT EXISTS player_baselines (
+            metric TEXT PRIMARY KEY,
+            quantiles_json TEXT NOT NULL,    -- {"50": v, "75": v, "90": v, "95": v, "99": v}
+            sample_n INTEGER NOT NULL,
+            computed_at TEXT DEFAULT (datetime('now'))
+        );
+        """
+    )
+    conn.commit()
+
     _seed_ban_responses(conn)
     _seed_sid_helper(conn)
 

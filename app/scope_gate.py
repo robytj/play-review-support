@@ -15,6 +15,22 @@ Resilience: when fastembed isn't available (embeddings.is_using_fallback() -- e.
 model download blocked), the hash pseudo-embeddings are semantically meaningless,
 so the gate degrades to a deterministic keyword classifier instead of pretending
 the centroid math means something. That path is production code, not test-only.
+
+Two more resilience rules (added 2026-07-09 after the purchase-intent regression,
+where a re-synced DB with no published+categorized kb_articles left the gate with
+ONLY the 4 special-class centroids, so every in-scope message was force-fitted
+into out_of_scope and purchase questions got deflected):
+
+  1. Degenerate-centroid fallback: if the build produced ZERO KB-category
+     centroids, the cosine math can only ever pick a special class -- that isn't
+     a classifier, it's a deflection machine. classify() detects this and uses
+     the deterministic keyword classifier instead (with a loud [warn]).
+  2. Support-concern veto: before ANY out_of_scope/abuse deflection (either
+     path), the message is checked against the shared support lexicons
+     (app/intents.py -- typo-tolerant). A message that plainly carries a support
+     concern ("i cant find my purchse", "this stupid game charged me twice") is
+     rescued into its KB category instead of deflected. Explicit red flags
+     (other-game names, jailbreak phrasing) always win over the veto.
 """
 from __future__ import annotations
 
@@ -22,7 +38,7 @@ import re
 
 import numpy as np
 
-from app import config, db, embeddings, llm
+from app import config, db, embeddings, intents, llm
 
 # ------------------------------------------------------------------ seed lists --
 
@@ -200,37 +216,109 @@ _SMALLTALK_RE = re.compile(
 )
 
 
+def is_human_request(text: str) -> bool:
+    """Explicit 'get me a person' phrasing -- shared with app/chat_engine.py so
+    a human ask outranks even the pre-gate data intents ('I need a refund, get
+    me a human' escalates instead of printing the purchase list)."""
+    t = (text or "").lower()
+    return any(p in t for p in _HUMAN_PATTERNS)
+
+
 def _keyword_classify(text: str) -> tuple[str, float]:
     t = (text or "").lower()
     if any(p in t for p in _HUMAN_PATTERNS):
         return ("human_request", 1.0)
-    if any(p in t for p in _ABUSE_PATTERNS):
-        return ("abuse", 1.0)
+    # Explicit red flags (other games, homework, jailbreaks) beat everything
+    # below, including the support-concern rescue: "refund my fortnite skin"
+    # stays out of scope.
     if any(p in t for p in _OOS_PATTERNS):
         return ("out_of_scope", 1.0)
+    if any(p in t for p in _ABUSE_PATTERNS):
+        # Heated-but-real: "this stupid game charged me twice" is a purchase
+        # issue delivered angrily, not abuse. Answer the concern; pure venting
+        # (no support signal) still deflects and strikes.
+        concern = intents.support_concern_category(text)
+        if concern:
+            return (concern, 0.5)
+        return ("abuse", 1.0)
     if _SMALLTALK_RE.match(t.strip()):
         return ("smalltalk", 1.0)
-    # in scope -- reuse the existing offline categorizer for the category label
+    # in scope -- typo-tolerant concern lexicons first ("purchse" still lands in
+    # Payments & Purchases), then the offline categorizer for the label.
+    concern = intents.support_concern_category(text)
+    if concern:
+        return (concern, 0.5)
     return (llm.categorize_keywords(text), 0.5)
 
 
 # ------------------------------------------------------------------- classify --
 
+_warned_degenerate = False
+
+
+def _kb_centroid_labels(cents: dict) -> list[str]:
+    return [lbl for lbl in cents if lbl not in SPECIAL_CLASSES]
+
+
+def _rescue(text: str) -> str | None:
+    """Support-concern veto for the centroid path: None when an explicit red
+    flag is present (red flags always deflect), else the concern category."""
+    t = (text or "").lower()
+    if any(p in t for p in _OOS_PATTERNS):
+        return None
+    return intents.support_concern_category(text)
+
+
 def classify(text: str) -> tuple[str, float]:
     """(label, score). Gate disabled -> everything is in scope ('General', 1.0).
     Score is cosine similarity to the winning centroid (or 1.0/0.5 sentinels on
     the keyword path). Below scope_gate.min_score nothing wins confidently ->
-    treated as out_of_scope: the chat agent answers ONLY what it can ground."""
+    out_of_scope, UNLESS the message plainly carries a support concern (veto)."""
+    global _warned_degenerate
     if not config.SCOPE_GATE_ENABLED:
         return (config.KB_DEFAULT_CATEGORY, 1.0)
     if embeddings.is_using_fallback():
         return _keyword_classify(text)
     cents = _get_centroids()
-    if not cents:
+    if not cents or not _kb_centroid_labels(cents):
+        # Zero KB-category centroids (no published+categorized kb_articles --
+        # e.g. after a DB re-sync): cosine against special classes alone can
+        # ONLY deflect. Refuse to run that math; keyword classifier instead.
+        if not _warned_degenerate:
+            _warned_degenerate = True
+            print("[warn] scope_gate: no KB-category centroids (no published "
+                  "kb_articles with a category) -- degenerate gate, using the "
+                  "keyword classifier. Re-run scripts/seed_support_playbook.py "
+                  "or publish+categorize KB articles to restore it.")
         return _keyword_classify(text)
     v = embeddings.embed(text)
     label, score = max(((lbl, float(np.dot(v, c))) for lbl, c in cents.items()),
                        key=lambda x: x[1])
+    if label in ("out_of_scope", "abuse") or score < config.SCOPE_GATE_MIN_SCORE:
+        concern = _rescue(text)
+        if concern:
+            return (concern, max(score, 0.5))
     if score < config.SCOPE_GATE_MIN_SCORE:
         return ("out_of_scope", score)
     return (label, score)
+
+
+def status() -> dict:
+    """Gate health for /api/dashboard/chat/health -- makes the degenerate state
+    VISIBLE instead of silently deflecting players (the 2026-07-09 failure was
+    invisible until players hit it)."""
+    if not config.SCOPE_GATE_ENABLED:
+        return {"enabled": False, "backend": "disabled", "healthy": True}
+    if embeddings.is_using_fallback():
+        return {"enabled": True, "backend": "keyword", "healthy": True,
+                "note": "fastembed unavailable -- deterministic keyword classifier"}
+    cents = _get_centroids()
+    kb = _kb_centroid_labels(cents)
+    healthy = bool(kb)
+    out = {"enabled": True, "backend": "centroid" if healthy else "keyword",
+           "kb_centroids": len(kb), "special_centroids": len(cents) - len(kb),
+           "healthy": healthy}
+    if not healthy:
+        out["note"] = ("degenerate: no published+categorized kb_articles -- "
+                       "keyword classifier in use; re-seed the KB playbook")
+    return out

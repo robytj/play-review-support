@@ -57,6 +57,11 @@ def _apply(cfg: dict):
     # this many completed real-money purchases (direct count or the
     # purchase.aggregated rollup) earns the "biggest supporters" gratitude line.
     g["CHAT_HIGH_PAYER_MIN_PURCHASES"] = int(chat_cfg.get("high_payer_min_purchases", 20))
+    # While-you-wait flavor (facts/jokes) + login-time player highlights
+    # (app/flavor.py, app/highlights.py). Both hot-reloadable, both default ON,
+    # each independently killable from config.yaml if the vibe misses.
+    g["CHAT_FLAVOR_ENABLED"] = bool(chat_cfg.get("flavor_enabled", True))
+    g["CHAT_HIGHLIGHTS_ENABLED"] = bool(chat_cfg.get("highlights_enabled", True))
     budgets = cfg.get("chat_budgets", {}) or {}
     g["CHAT_TIER2_PER_SESSION"] = int(budgets.get("tier2_per_session", 8))
     g["CHAT_MESSAGES_PER_SESSION"] = int(budgets.get("messages_per_session", 30))

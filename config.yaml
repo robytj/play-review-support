@@ -31,6 +31,8 @@ chat:
   enabled: true
   tau_clarify: 0.45
   high_payer_min_purchases: 20
+  flavor_enabled: true
+  highlights_enabled: true
 chat_budgets:
   tier2_per_session: 8
   messages_per_session: 30

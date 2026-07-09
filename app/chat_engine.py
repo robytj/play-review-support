@@ -30,8 +30,8 @@ import re
 import secrets
 from datetime import date
 
-from app import (config, db, embeddings, llm, player_context, router, scope_gate,
-                 ticketing, vectorstore)
+from app import (config, db, embeddings, flavor, highlights, intents, llm,
+                 player_context, router, scope_gate, ticketing, vectorstore)
 
 # ------------------------------------------------------------------- constants --
 
@@ -44,8 +44,13 @@ MAX_IMAGE_ATTEMPTS = 2
 
 GAME_CHIPS = ["PrimeRush.gg (LatAm)", "PrimeRushGame (Global)", "Prime Rush MENA"]
 
-GREETING = ("Hey! Welcome to PrimeRush support — I'm the PrimeRush support bot. "
-            "Which game are you playing?")
+# Voice note (John, 2026-07-09): these lines carry the founder voice — warm,
+# high-energy, gamer-to-gamer, specific, never corporate, never robotic. Same
+# rules as the Play-review replies: sincere first, playful second, and the
+# guardrail SEMANTICS of every line are unchanged — only the delivery.
+GREETING = ("Hey, welcome to PrimeRush support! You're talking to the PrimeRush "
+            "bot — built by the same crew that builds the game. Which game are "
+            "you playing?")
 NON_LATAM_NOTE = ("Heads up — this test build supports PrimeRush.gg (LatAm), "
                   "but I'll do my best to help!")
 ASK_SID_TEXT = ("Could you share your player SID? It's the 8-character code on your "
@@ -57,23 +62,28 @@ SID_IMAGE_OFFER = ("Still no luck — if it's easier, upload a screenshot of you
 DEGRADED_NOTE = ("I couldn't verify your account, so I'll answer from our help articles "
                  "only — no account-specific details. A human can verify you later "
                  "if needed.")
-ISSUE_PROMPT = "What can I help you with today?"
+ISSUE_PROMPT = ("So — what can I do for you today? Purchases, account, matches, "
+                "bugs… bring it on.")
 CONFIRM_RETRY = "Just to be sure — is that your account? A quick Yes or No works."
 NAME_NO_TEXT = "I couldn't find you — can you share your SID again?"
 CROSS_SID_REFUSAL = ("I can only help with the account we verified in this chat — "
                      "I can't look up or discuss any other player's account.")
-SMALLTALK_REPLY = ("Happy to chat! I'm best at PrimeRush support questions though — "
-                   "what can I help you with?")
-OOS_DEFLECTION = ("I can only help with PrimeRush support — your account, purchases, "
-                  "gameplay issues, that kind of thing. What's going on with your game?")
-ABUSE_DEFLECTION = ("I get that this is frustrating — I'm here to help with your "
-                    "PrimeRush issue, so let's keep it civil. What's going on?")
+SMALLTALK_REPLY = ("Happy to chat! Support questions are where I really shine though "
+                   "— what's going on in your game?")
+OOS_DEFLECTION = ("That one's outside my arena — I'm all about PrimeRush support: "
+                  "your account, purchases, matches, bugs. What's going on with "
+                  "your game?")
+ABUSE_DEFLECTION = ("I get it — when something's broken it's genuinely maddening. "
+                    "I'm here to fix your PrimeRush issue, so let's keep it civil: "
+                    "what's going on?")
 STRIKES_GOODBYE = ("This doesn't seem to be about PrimeRush support, so I'll close this "
-                   "chat here. Start a New Chat anytime you have a game issue!")
+                   "chat here. Start a New Chat anytime you have a game issue — "
+                   "I'll be right here!")
 CSAT_QUESTION = "Did this solve it?"
-RESOLVED_GOODBYE = ("Awesome — glad that sorted it! Come back anytime, and have fun "
-                    "out there \U0001F3AE")
-ESCALATE_OFFER = "Sorry that didn't do it. Want me to raise this with the team as a ticket?"
+RESOLVED_GOODBYE = ("Awesome — glad that sorted it! Now go make someone regret "
+                    "dropping near you. See you in the arena \U0001F3AE")
+ESCALATE_OFFER = ("Sorry that didn't do it — you deserve better than a shrug. "
+                  "Want me to raise this with the team as a ticket?")
 ESCALATE_DECLINED = "No problem — what else can I help you with?"
 GOODBYE = "Thanks for stopping by — start a New Chat anytime!"
 TIMEOUT_GOODBYE = ("Looks like you stepped away, so I'm closing this chat for now — "
@@ -91,9 +101,12 @@ RATING_RE = re.compile(r"^\s*([1-5])\s*(?:/\s*5|\s*stars?)?\s*[.!]*\s*$", re.IGN
 # lowercase words like "download" can't false-positive; players paste SIDs as-is.
 SID_TOKEN_RE = re.compile(r"\b[A-Z0-9]{8}\b")
 
+# NOTE: "order" was removed 2026-07-09 -- "in order to ..." was force-routing
+# gameplay questions into the purchase summary. app/intents.py is now the main
+# detector (typo-tolerant); this regex stays as the zero-cost fast path.
 _PURCHASE_RE = re.compile(
     r"\b(purchase[sd]?|payment|paid|pay|bought|buy|charge[ds]?|charged|refund|"
-    r"transaction|receipt|billing|invoice|gems?|coins?|diamonds?|top.?up|order)\b",
+    r"transaction|receipt|billing|invoice|gems?|coins?|diamonds?|top.?up)\b",
     re.IGNORECASE,
 )
 _BAN_RE = re.compile(
@@ -676,12 +689,33 @@ def _recognition(session) -> list[dict]:
         return [_add_msg(session["id"], "bot", "text",
                          f"Thanks, {session['player_name'] or 'there'}! {ISSUE_PROMPT}")]
 
+    # Login-time highlight precompute (app/highlights.py): unique-player facts,
+    # computed ONCE from the already-fetched context and parked on the session
+    # meta. The best percentile-backed line upgrades the recognition highlight;
+    # the rest drip out as "while I check that" flavor during the issue loop.
+    top_line = None
+    if getattr(config, "CHAT_HIGHLIGHTS_ENABLED", True):
+        try:
+            hl = highlights.compute_highlights(ctx)
+        except Exception as e:
+            print(f"[warn] chat: highlight precompute failed ({e!r})")
+            hl = []
+        if hl:
+            meta = _meta(session)
+            meta["highlights"] = [h["line"] for h in hl]
+            meta["highlights_used"] = 0
+            _save_meta(session["id"], meta)
+            if hl[0]["top_pct"]:            # only percentile-backed claims may
+                top_line = hl[0]["line"]    # upgrade the recognition line
+                meta["highlights_used"] = 1
+                _save_meta(session["id"], meta)
+
     thanks = _supporter_thanks(ctx, session["id"])
     facts = {
         "player_name": ctx.nickname,
         "playing_since": ctx.playing_since,
         "matches_played": ctx.matches_played,
-        "highlight": _pick_highlight(ctx.stats),
+        "highlight": top_line or _pick_highlight(ctx.stats),
     }
     if thanks:
         # Haiku only ever sees the band word -- no counts/amounts exist anywhere
@@ -764,6 +798,42 @@ def _handle_rating(session, text: str) -> list[dict]:
     return out
 
 
+# ------------------------------------------------------------ while-you-wait flavor --
+
+FLAVOR_MAX_PER_SESSION = 4      # after this the bot just works quietly
+FLAVOR_MIN_GAP_MSGS = 2         # never two flavored turns back to back
+
+
+def _flavor_msgs(session, meta: dict) -> list[dict]:
+    """One 'while I pull that up' line for a heavy turn (data intent / Tier-2):
+    first the player's own precomputed highlights (the good stuff), then
+    PrimeRush facts and jokes, alternating, no repeats in a session. Returns []
+    whenever it shouldn't speak -- disabled, rate-limited, or out of material."""
+    if not getattr(config, "CHAT_FLAVOR_ENABLED", True):
+        return []
+    sid = session["id"]
+    if meta.get("flavor_shown", 0) >= FLAVOR_MAX_PER_SESSION:
+        return []
+    if session["msg_count"] - meta.get("flavor_last_msg", -99) < FLAVOR_MIN_GAP_MSGS:
+        return []
+    n = meta.get("flavor_shown", 0)
+    hs, used = meta.get("highlights") or [], meta.get("highlights_used", 0)
+    if used < len(hs):
+        kind, line = "highlight", hs[used]
+        meta["highlights_used"] = used + 1
+    else:
+        picked = flavor.pick(sid, meta.get("flavor_used") or [])
+        if picked is None:
+            return []
+        kind, key, line = picked
+        meta.setdefault("flavor_used", []).append(key)
+    meta["flavor_shown"] = n + 1
+    meta["flavor_last_msg"] = session["msg_count"]
+    _save_meta(sid, meta)
+    return [_add_msg(sid, "bot", "text", flavor.lead(kind, sid, n) + line,
+                     {"flavor": kind})]
+
+
 # ------------------------------------------------------------------- issue loop --
 
 def _issue_loop(session, text: str) -> list[dict]:
@@ -806,7 +876,25 @@ def _issue_loop(session, text: str) -> list[dict]:
         return [_add_msg(sid, "bot", "text", CROSS_SID_REFUSAL,
                          {"guard": "cross_sid"})]
 
-    # 5. scope gate (SPEC-08 §3.1)
+    # 5. deterministic data intents BEFORE the gate (2026-07-09 regression fix:
+    #    a verified player asking about their own purchases/ban is in scope by
+    #    definition -- the gate must never eat these, however degenerate its
+    #    centroids get). Typo-tolerant matching via app/intents.py, with the
+    #    original regexes kept as the fast path. One thing still outranks them:
+    #    an EXPLICIT human ask ("refund me, get me a human") always escalates.
+    wants_purchases = bool(_PURCHASE_RE.search(text)) or intents.has_purchase_intent(text)
+    wants_ban = bool(_BAN_RE.search(text)) or intents.has_ban_intent(text)
+    if (wants_purchases or wants_ban) and scope_gate.is_human_request(text):
+        return _escalate(session, question=text, reason="player asked for a human")
+    ctx = None
+    if session["sid"] and (wants_purchases or wants_ban):
+        ctx = player_context.get_player_context(session["sid"])
+    if wants_purchases and ctx and ctx.transactions is not None:
+        return _flavor_msgs(session, meta) + _purchase_reply(session, meta, ctx)
+    if wants_ban and ctx and (ctx.is_banned or ctx.chat_banned):
+        return _ban_reply(session, ctx, text)
+
+    # 6. scope gate (SPEC-08 §3.1)
     label, score = scope_gate.classify(text)
     if label in ("out_of_scope", "abuse"):
         strikes = session["strikes"] + 1
@@ -823,7 +911,7 @@ def _issue_loop(session, text: str) -> list[dict]:
     if label == "human_request":
         return _escalate(session, question=text, reason="player asked for a human")
 
-    # 6. clarify round in flight? (one round max)
+    # 7. clarify round in flight? (one round max)
     question = text
     if meta.get("clarify"):
         original = meta.get("clarify_question") or ""
@@ -834,16 +922,14 @@ def _issue_loop(session, text: str) -> list[dict]:
         _save_meta(sid, meta)
         return _route(session, meta, question)
 
-    ctx = player_context.get_player_context(session["sid"]) if session["sid"] else None
+    if ctx is None and session["sid"]:
+        ctx = player_context.get_player_context(session["sid"])
 
-    # 7. data intent: purchases (before generic RAG, SPEC-08 §3.3)
-    if (label == "Payments & Purchases" or _PURCHASE_RE.search(text)) and ctx \
-            and ctx.transactions is not None:
-        return _purchase_reply(session, meta, ctx)
-
-    # 8. data intent: ban / appeal (SPEC-08 §3.3)
-    if (ctx and (ctx.is_banned or ctx.chat_banned)
-            and (label == "Bans & Fair Play" or _BAN_RE.search(text))):
+    # 8. gate-label backstops for the data intents (the gate can still route a
+    #    purchase/ban phrasing the lexicons missed)
+    if label == "Payments & Purchases" and ctx and ctx.transactions is not None:
+        return _flavor_msgs(session, meta) + _purchase_reply(session, meta, ctx)
+    if (ctx and (ctx.is_banned or ctx.chat_banned) and label == "Bans & Fair Play"):
         return _ban_reply(session, ctx, text)
 
     # 9. tiered router (SPEC-08 §3.4)
@@ -980,12 +1066,16 @@ def _route(session, meta: dict, question: str) -> list[dict]:
     res = router.suggest(question)  # pure -- no messages/metrics/cache side effects
 
     if res["tier"] in (0, 1, 2):
+        pre = []
         if res["tier"] == 2:
             _update(sid, tier2_used=session["tier2_used"] + 1)
             _bump_usage("tier2_calls")
+            # Tier-2 is the turn that actually took work -- the natural moment
+            # for a highlight compliment or a PrimeRush fact/joke.
+            pre = _flavor_msgs(session, meta)
         msg = _add_msg(sid, "bot", "text", res["text"],
                        {"tier": res["tier"], "n_chunks": len(res.get("chunks") or [])})
-        return [msg] + _offer_csat(session, meta, question)
+        return pre + [msg] + _offer_csat(session, meta, question)
 
     # Tier 3. Clarify-or-answer band (SPEC-08 §3.4): retrieval landed between
     # tau_clarify and tau_retrieval -> one round of chips from the top-2 titles.

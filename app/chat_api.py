@@ -39,8 +39,10 @@ def _closed(exc: chat_engine.SessionClosed) -> JSONResponse:
 @router.get("/health", dependencies=[Depends(require_service_key)])
 def health():
     """Shadow-testing diagnostics: is the game Mongo reachable from THIS deploy?
-    A dead Mongo otherwise masquerades as 'SID not found' in the chat."""
-    from app import player_context
+    A dead Mongo otherwise masquerades as 'SID not found' in the chat. Since
+    2026-07-09 this also surfaces scope-gate health (a degenerate gate silently
+    deflected purchase questions -- never again) and highlight-baseline state."""
+    from app import highlights, player_context, scope_gate
     mongo_ok = False
     try:
         db = player_context._db()
@@ -49,7 +51,18 @@ def health():
             mongo_ok = True
     except Exception:
         mongo_ok = False
-    return {"chat_enabled": bool(config.CHAT_ENABLED), "mongo": mongo_ok}
+    gate = {"healthy": False, "note": "status check failed"}
+    try:
+        gate = scope_gate.status()
+    except Exception as e:
+        gate["note"] = f"status check failed: {e!r}"
+    baselines = {"healthy": False}
+    try:
+        baselines = highlights.baselines_status()
+    except Exception:
+        pass
+    return {"chat_enabled": bool(config.CHAT_ENABLED), "mongo": mongo_ok,
+            "scope_gate": gate, "highlight_baselines": baselines}
 
 
 @router.post("/sessions", dependencies=[Depends(require_service_key)])
