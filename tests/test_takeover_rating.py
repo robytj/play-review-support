@@ -215,7 +215,8 @@ def test_rating_after_csat_yes_paths(start, say, known_player, monkeypatch):
         say(sid, "EDFXPT5G")
         say(sid, "Yes")
         say(sid, "my game crashes")
-        out = say(sid, "Yes")                              # CSAT yes -> RATING
+        say(sid, "Yes")                                    # CSAT yes -> anything more?
+        out = say(sid, "Exit")                             # -> RATING
         assert out["state"] == "RATING"
         assert any(m["type"] == "rating" for m in out["messages"])
         return sid

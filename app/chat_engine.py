@@ -111,6 +111,23 @@ STRIKES_GOODBYE = ("This doesn't seem to be about PrimeRush support, so I'll clo
                    "chat here. Start a New Chat anytime you have a game issue — "
                    "I'll be right here!")
 CSAT_QUESTION = "Did this solve it?"
+# After a solved answer: offer another round instead of closing straight away
+# (John 2026-07-09) -- Menu re-shows the options, Exit wraps up with the rating.
+# At most ANYTHING_MORE_MAX rounds, then the bot wraps the session itself.
+ANYTHING_MORE = "Love it. Anything else I can help with?"
+ANYTHING_MORE_CHIPS = ["Menu", "Exit"]
+ANYTHING_MORE_MAX = 3
+MENU_AGAIN = "Here's the menu — pick one, or just type your question:"
+WRAP_UP_TEXT = ("Three solved in one chat — that's a good day's work! I'll wrap "
+                "up here to keep things tidy. Start a New Chat anytime!")
+_EXIT_WORDS = {"exit", "nothing", "nothing else", "done", "that's all", "thats all",
+               "bye", "goodbye", "im good", "i'm good", "all good", "no more"}
+_MENU_WORDS = {"menu", "options", "more", "show menu"}
+TICKET_UPDATE_INTRO = "Quick update while you're here — you have an open ticket:"
+TICKET_UPDATE_INTRO_PLURAL = "Quick update while you're here — your open tickets:"
+SID_FIRST_NO_MATCH = ("That looks like a SID, so I went ahead and checked "
+                      "PrimeRush.gg (LatAm) first — no match though. Double-check "
+                      "the code on your profile page and send it again?")
 RESOLVED_GOODBYE = ("Awesome — glad that sorted it! Now go make someone regret "
                     "dropping near you. See you in the arena \U0001F3AE")
 ESCALATE_OFFER = ("Sorry that didn't do it — you deserve better than a shrug. "
@@ -632,6 +649,20 @@ def handle_image(session_id: int, image_b64: str, media_type: str) -> dict:
 # --------------------------------------------------------------- scripted phases --
 
 def _handle_game_choice(session, text: str) -> list[dict]:
+    # Player pasted their SID straight away (skipping the game question)?
+    # Meet them where they are: try PrimeRush.gg (LatAm) -- the connected
+    # build -- before falling back to the scripted flow (John 2026-07-09).
+    token = _extract_sid_token(text)
+    if token:
+        _update(session["id"], game_choice="PrimeRush.gg (LatAm) — assumed from SID",
+                state="ASK_SID", sid_attempts=1)
+        session = _get(session["id"])
+        pre = _flavor_msgs(session, _meta(session))   # lookup beat: fact/joke
+        ctx = player_context.get_player_context(token)
+        if ctx:
+            return pre + _found_player(session, ctx)
+        return pre + [_add_msg(session["id"], "bot", "text", SID_FIRST_NO_MATCH)]
+
     # Choice is conversational only; stored on the session (SPEC-08 §2.1).
     _update(session["id"], game_choice=text[:60], state="ASK_SID")
     out = []
@@ -732,6 +763,34 @@ def _supporter_thanks(ctx, session_id: int) -> str | None:
     return variants[hash(session_id) % len(variants)]
 
 
+def _open_ticket_update(player_sid: str) -> list[dict] | None:
+    """One login-time status line per open ticket for this SID (newest 2) --
+    'welcome back, and by the way your ticket is moving'. Player-safe wording
+    only: reference, opened date, queue state; never internal notes/assignees."""
+    if not player_sid:
+        return None
+    rows = db.get_conn().execute(
+        "SELECT id, public_id, status, created_at, first_human_response_at "
+        "FROM conversations WHERE player_id = ? AND status != 'resolved' "
+        "ORDER BY id DESC LIMIT 2", (player_sid,)).fetchall()
+    if not rows:
+        return None
+    lines = []
+    for r in rows:
+        ref = r["public_id"] or f"#{r['id']}"
+        opened = (r["created_at"] or "")[:10]
+        if r["first_human_response_at"]:
+            state = "the team has picked it up and replied"
+        elif r["status"] == "paused":
+            state = "on hold with the team"
+        else:
+            state = "with the team — in the review queue"
+        lines.append(f"• Ticket {ref}" + (f" (opened {opened})" if opened else "")
+                     + f" — {state}")
+    intro = TICKET_UPDATE_INTRO_PLURAL if len(lines) > 1 else TICKET_UPDATE_INTRO
+    return [intro + "\n" + "\n".join(lines)]
+
+
 def _recognition(session) -> list[dict]:
     ctx = player_context.get_player_context(session["sid"]) if session["sid"] else None
     _update(session["id"], state="ISSUE_LOOP")
@@ -819,13 +878,24 @@ def _recognition(session) -> list[dict]:
             line += f" {thanks}"
         text = line
     rec = _add_msg(session["id"], "bot", "recognition", text, {"facts": facts})
+    out = [rec]
+    # Open-ticket status right after the hello -- proactive, like a person who
+    # remembers you have something in flight (John 2026-07-09).
+    try:
+        ticket_lines = _open_ticket_update(ctx.sid)
+    except Exception as e:
+        print(f"[warn] chat: open-ticket lookup failed ({e!r})")
+        ticket_lines = None
+    if ticket_lines:
+        out.append(_add_msg(session["id"], "bot", "text", ticket_lines[0],
+                            {"ticket_update": True}))
     if returning:   # regulars get the menu as chips -- one tap to their usual
-        prompt = _add_msg(session["id"], "bot", "chips",
-                          "So — what can I do for you today?",
-                          {"chips": list(MENU_CHIPS)})
+        out.append(_add_msg(session["id"], "bot", "chips",
+                            "So — what can I do for you today?",
+                            {"chips": list(MENU_CHIPS)}))
     else:
-        prompt = _add_msg(session["id"], "bot", "text", ISSUE_PROMPT)
-    return [rec, prompt]
+        out.append(_add_msg(session["id"], "bot", "text", ISSUE_PROMPT))
+    return out
 
 
 def _enter_degraded(session) -> list[dict]:
@@ -935,14 +1005,36 @@ def _issue_loop(session, text: str) -> list[dict]:
         last_q = meta.pop("last_question", "")
         _save_meta(sid, meta)
         if _is_yes(text):
-            # solved -> ask for a star rating before closing (RESOLVED on answer)
-            return _ask_rating(sid, meta, close_state="RESOLVED", end_reason="resolved")
+            # solved -> offer another round (Menu/Exit) up to ANYTHING_MORE_MAX
+            # times, then wrap the chat up ourselves (John 2026-07-09).
+            rounds = meta.get("anything_more_count", 0)
+            if rounds >= ANYTHING_MORE_MAX:
+                wrap = _add_msg(sid, "bot", "text", WRAP_UP_TEXT)
+                return [wrap] + _ask_rating(sid, meta, close_state="RESOLVED",
+                                            end_reason="resolved")
+            meta["anything_more"] = True
+            meta["anything_more_count"] = rounds + 1
+            _save_meta(sid, meta)
+            return [_add_msg(sid, "bot", "chips", ANYTHING_MORE,
+                             {"chips": list(ANYTHING_MORE_CHIPS),
+                              "anything_more": True})]
         if _is_no(text):
             meta["escalate_offer"] = True
             meta["last_question"] = last_q
             _save_meta(sid, meta)
             return [_add_msg(sid, "bot", "chips", ESCALATE_OFFER, {"chips": ["Yes", "No"]})]
         # anything else = a new message; fall through and process it normally
+
+    # 2.5 pending anything-more answer (Menu / Exit / a fresh question)
+    if meta.pop("anything_more", None):
+        _save_meta(sid, meta)
+        tl = (text or "").strip().lower().rstrip("!.?")
+        if tl in _EXIT_WORDS or _is_no(text):
+            return _ask_rating(sid, meta, close_state="RESOLVED", end_reason="resolved")
+        if tl in _MENU_WORDS or _is_yes(text):
+            return [_add_msg(sid, "bot", "chips", MENU_AGAIN,
+                             {"chips": list(MENU_CHIPS), "menu": True})]
+        # anything else = a new question; fall through and process it normally
 
     # 3. pending escalation offer
     if meta.pop("escalate_offer", None):

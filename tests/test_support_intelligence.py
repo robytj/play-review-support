@@ -234,3 +234,92 @@ def test_intent_log_accumulates_by_kind(issue_session, say, known_player, monkey
     assert any(k.startswith("kb:") for k in logged)
     prof = profile.get("EDFXPT5G")
     assert prof["topics"]["purchases"] >= 1
+
+
+# --------------------------------------------- anything-more loop (Menu / Exit) --
+
+def test_solved_offers_menu_exit_then_menu_reshows(issue_session, say, known_player):
+    sid = issue_session()
+    say(sid, "show my purchases")
+    out = say(sid, "Yes")                               # solved -> another round?
+    more = next(m for m in out["messages"] if m["meta"].get("anything_more"))
+    assert more["meta"]["chips"] == ["Menu", "Exit"]
+    out = say(sid, "Menu")                              # re-show the options
+    chips = next(m for m in out["messages"] if m["type"] == "chips")
+    assert chips["meta"]["chips"] == chat_engine.MENU_CHIPS
+    assert out["state"] == "ISSUE_LOOP"
+
+
+def test_anything_more_exit_goes_to_rating(issue_session, say, known_player):
+    sid = issue_session()
+    say(sid, "show my purchases")
+    say(sid, "Yes")
+    out = say(sid, "Exit")
+    assert out["state"] == "RATING"
+    out = say(sid, "5")
+    assert out["state"] == "RESOLVED"
+
+
+def test_anything_more_new_question_just_works(issue_session, say, known_player):
+    sid = issue_session()
+    say(sid, "show my purchases")
+    say(sid, "Yes")
+    out = say(sid, "my stats")                          # neither Menu nor Exit
+    assert "Your combat record" in bot_text(out)
+
+
+def test_anything_more_capped_at_three_rounds(issue_session, say, known_player):
+    sid = issue_session()
+    for i in range(3):                                  # rounds 1-3: offered
+        say(sid, "show my purchases")
+        out = say(sid, "Yes")
+        assert any(m["meta"].get("anything_more") for m in out["messages"]), i
+        say(sid, "Menu")
+    say(sid, "show my purchases")                       # 4th solve -> wrap up
+    out = say(sid, "Yes")
+    assert chat_engine.WRAP_UP_TEXT in bot_text(out)
+    assert out["state"] == "RATING"
+
+
+# ------------------------------------------------------- open-ticket status hello --
+
+def test_login_reports_open_ticket_status(start, say, known_player):
+    sid1, _ = _run_session(start, say, ["I want to talk to a real person", "5"])
+    row = db.get_conn().execute(
+        "SELECT public_id, status FROM conversations ORDER BY id DESC LIMIT 1").fetchone()
+    assert row["status"] == "escalated"
+
+    sid2, _ = _run_session(start, say, [])
+    update = db.get_conn().execute(
+        "SELECT content FROM chat_messages WHERE session_id=? AND role='bot' "
+        "AND content LIKE '%Ticket %'", (sid2,)).fetchone()
+    assert update is not None
+    assert row["public_id"] in update["content"]
+    assert "review queue" in update["content"]
+
+
+def test_login_quiet_when_no_open_tickets(start, say, known_player):
+    sid, _ = _run_session(start, say, [])
+    update = db.get_conn().execute(
+        "SELECT content FROM chat_messages WHERE session_id=? AND role='bot' "
+        "AND content LIKE '%Quick update%'", (sid,)).fetchone()
+    assert update is None
+
+
+# ----------------------------------------------------------- SID-first at intake --
+
+def test_sid_at_game_question_skips_straight_to_confirm(start, say, known_player):
+    s = start()
+    sid = s["session_id"]
+    out = say(sid, "2S6WGTSK is my id")                 # unknown SID at ASK_GAME
+    assert out["state"] == "ASK_SID"
+    assert "PrimeRush.gg (LatAm) first" in bot_text(out)
+
+    s2 = start()
+    sid2 = s2["session_id"]
+    out = say(sid2, "EDFXPT5G")                         # known SID at ASK_GAME
+    assert out["state"] == "CONFIRM_NAME"
+    assert any(m["type"] == "context_card" for m in out["messages"])
+    row = db.get_conn().execute("SELECT game_choice FROM chat_sessions WHERE id=?",
+                                (sid2,)).fetchone()
+    assert "assumed from SID" in row["game_choice"]

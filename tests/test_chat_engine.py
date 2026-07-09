@@ -66,6 +66,11 @@ def test_full_happy_path(client, start, say, known_player, monkeypatch):
     assert out["budget"]["tier2_used"] == 1
 
     out = say(sid, "Yes")
+    assert out["state"] == "ISSUE_LOOP"                    # solved -> offer another round
+    more = next(m for m in out["messages"] if m["meta"].get("anything_more"))
+    assert more["meta"]["chips"] == ["Menu", "Exit"]
+
+    out = say(sid, "Exit")
     assert out["state"] == "RATING"                        # star rating before close
     rate = next(m for m in out["messages"] if m["type"] == "rating")
     assert rate["meta"]["chips"] == ["1", "2", "3", "4", "5"]
