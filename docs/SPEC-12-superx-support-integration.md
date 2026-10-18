@@ -1,353 +1,317 @@
 # SPEC-12 — White Glove on SuperX: support.superx.gg, the store widget, and the ops desk
 
-**Owner:** Roby · **Written:** 18 Oct 2026 · **Status:** draft for review · **Mocks:** `outputs/superx-support-mocks/index.html`
+**Owner:** Roby · **Written:** 18 Oct 2026 · **v2:** same day, rewritten after reading the SuperX
+code (`primerush-creators`, `superx-tc`) and the `superx-community` Vercel team ·
+**Status:** draft for review · **Mocks:** `outputs/superx-support-mocks/index.html`
 
 > One sentence: a player who comes for help lands inside SuperX, signed in once, with their
-> profile, collection, purchases and tickets on the same account, and the store one tap away.
+> profile, collection, purchases and tickets in one place, and the store one tap away.
 
-Builds on the support spec pack (`specs/support-platform/`, SPEC-01…11), the player data map
-(`PLAYER_DATA_MAP.md`), and the SuperX plans in `~/Documents/Claude/Projects/SuperXWebstore/`.
-Identity follows `SuperTuned/docs/colour-system.md`.
+Builds on `specs/support-platform/` (SPEC-01…11) and `PLAYER_DATA_MAP.md`. Identity follows
+`SuperTuned/docs/colour-system.md`.
 
 ---
 
-## 0 · Decisions this spec asks for
+## 0 · Fix first (found while reading the code)
+
+These are live today and don't wait for this project.
+
+| # | Problem | Where | Fix |
+|---|---|---|---|
+| F1 | **Our bot is already answering Tower Conquest players with the Prime Rush KB.** `towerconquest.superx.gg/support` posts to `primebot.up.railway.app/chat`; that endpoint ignores the game and the conversations mix into Prime Rush data as channel `web` | `superx-tc/store/app/api/support/chat/route.ts`; `PrimeRush-Bot/app/main.py` `POST /chat` | Short term: SupportBot reads the `[towerconquest:<lang>]` prefix, tags `game`, and answers TC with a TC-only KB (tickets only until it exists). Long term: §5 |
+| F2 | Public `/chat` needs no key and has no rate limit — anyone can spend our model budget | `app/main.py` | Require the `SUPPORT_CHAT_SECRET` bearer superx-tc already sends; per-IP + per-`external_id` limits; daily budget applies |
+| F3 | **Anyone can act as any Prime Rush player on the LATAM store.** `/ingame` base64-decodes the session JWT without verifying it and redirects to `/?userid=<id>`; the store trusts `?userid` | `primerush-creators@brx-store` `app/ingame/route.ts:3-40`, `useStoreAccount.ts:35-50` | Verify the JWT signature, create a real session, drop `?userid` |
+| F4 | A service-auth API key is hard-coded in source | `primerush-creators` `app/api/redeem-code/route.ts:38` | Rotate it; move to env |
+| F5 | Player-facing copy names payment vendors ("via Apple, XSolla") | SupportBot `app/player_context._PAYMENT_LABELS` | Show App Store · Google Play · SuperX store (SuperX rule: no payment-vendor names in public copy) |
+
+---
+
+## 1 · What exists (verified)
+
+### 1.1 SuperX on Vercel (`superx-community` team)
+
+| Domain | Vercel project | Repo / branch |
+|---|---|---|
+| `www.superx.gg` | community-tools | `LeeCory/superx.gg` (Supabase) |
+| `primerush.superx.gg`, `hub.primerush.gg` | primerush-creators | `JuneSoftware/primerush-creators@main` — the Hub |
+| `shop.primerush.gg`, `loja.primerush.gg` | primerush-creators | `@brx-store` — LATAM store |
+| `stage.primerushgame.com` | primerush-creators | `@market-place` — P2P marketplace |
+| `store.primerushgame.com` | primerush-store-global | `primerush-creators@global-store` (inferred) |
+| `store.primerushmena.com` | mena-store | `primerush-creators@mena-store` (inferred) |
+| `towerconquest.superx.gg` | tc-webstore | `JuneSoftware/superx-tc` (`SUPERX_GAME_ID`) |
+| `maskgun.superx.gg` | maskgun-webstore | `JuneSoftware/superx-tc` |
+| `game-gateway.superx.gg` | game-gateway | `JuneSoftware/GameGateway` — admin with Google SSO for staff domains |
+| `market.superx.gg` | web3-marketplace | `SuperGam1ng/web3-marketplace-frontend` |
+
+Most Prime Rush storefronts are **not on superx.gg** (primerush.gg, primerushgame.com,
+primerushmena.com). That decides the identity design (§3).
+
+### 1.2 Two identity systems
+
+| | Prime Rush (`primerush-creators`) | Tower Conquest, MaskGun (`superx-tc`) |
+|---|---|---|
+| Sign-in | Supabase: Google OAuth; SID + OTP delivered to the in-game inbox → Supabase user `{sid}@superingame.com`; Google users link a game account by OTP | Per-game: Short ID / Player ID + inbox OTP; in-game launch (`?lt=` MG, `?sid=` TC); Google (MG) |
+| Session | `@supabase/ssr` defaults: host-only cookie per site, no SSO between hub/shop/store | Hand-rolled HMAC token in `tc_portal` / `mg_portal`, host-only, 3-day sliding |
+| Account model | `auth.users` + `public.game_accounts(user_id, game_sku latam\|global, long_id, short_id, ingame_name)` | `{gid, nk, sid, auth}` — no cross-game account |
+| Proof levels | Supabase session = proven (OTP/Google) | `isProvenOwner()`: otp, game, google, apple = proven; `sid` (bare Short ID) = **not proven** |
+| Backend trust | **SuperX API accepts the Supabase access token as Bearer** (`/users/me`, `/profile`) | Signed calls to each game backend (TC `X-Agent-*` HMAC, MG `X-MG-*` HMAC) |
+
+### 1.3 Support that already exists on SuperX
+
+- **superx-tc**: `/support` page with FAQ + `ChatWidget` (inline panel, not an iframe) → server
+  proxy → SupportBot `/chat`. Anonymous `web-<uuid>` id; never reads the session; ignores
+  `conversation_id`. Enabled for TC, off for MG (capability `supportChat`).
+- **primerush-creators@support-announcements** (unmerged, May): a full ticket system — pages
+  `/support`, `/support/new`, `/support/tickets/[id]`; Supabase schema `support.tickets` (ids
+  `PR-XXXXXXXX`, type games|payments, ~39 sub-categories, statuses, RLS), `support.messages`,
+  `support.ai_runs`; a Claude agent; connectors to SuperX `/users/me` and transactions (with a
+  bug: player JWT used on admin-only endpoints).
+- **SuperX `/users/me`** already returns `Support` info (email, ban flags, devices, last seen,
+  matches, build, location).
+- Prime Rush hub footer SUPPORT → Discord.
+
+### 1.4 Orders and coupons
+
+- Prime Rush: Xsolla checkout (projects 299285 LATAM/main, 264755 global, 308748 MENA); **no
+  webhook in the repo** — fulfilment is SuperX/game-side; orders visible via the SuperX
+  transaction webhook into Supabase `public.transactions` and SuperX
+  `GET /users/{id}/transactions` (admin policy).
+- TC / MG: Xsolla webhook in `superx-tc` (`order_paid`, `refund`, clawback behind
+  `REFUND_CLAWBACK`, "flagged for support review"); orders stored by the game backends (TC
+  `store_transactions`, MG `/web/v1/purchases/*`); **no player-facing order history**.
+- Coupons (TC/MG): thank-you bonus coupons delivered by in-game mail (and push for MG via
+  OneSignal), redeemed at checkout — reusable for support offers (§8).
+
+### 1.5 Support platform and ops desk
+
+SupportBot (FastAPI, Railway): SID-first chat agent, tiered router, purchase/ban intents,
+menus, player memory, takeover, ratings, ticketing (priority/assignee/SLA/audit), partner API
+(SPEC-10), help-site sample. Ops dashboard (Flask, Railway): Reviews, Cheaters, Match Analyzer,
+Diagnostics, Support, SupportKB, Ticket Review, Support Chat, Settings, Weapon Meta/Config.
+
+---
+
+## 2 · Decisions
 
 | # | Decision | Recommendation |
 |---|---|---|
-| D1 | Domains | `support.superx.gg` (players), `ops.superx.gg` (staff). Keep the per-game hubs (`primerush.superx.gg` …) as the store fronts; make `webstore.superx.gg` the cross-game store front that links into them, not a rewrite |
-| D2 | One account | SuperX (Supabase) account is the single player identity; each game's SID is a linked *game identity*. Support trusts the SuperX session, never a bare SID, for anything account-specific |
-| D3 | System of record | SupportBot keeps tickets, chats, KB and agent state. SuperX keeps accounts, store orders and rewards. Game backends keep gameplay and in-game purchases. No data is copied between them — they call each other |
-| D4 | Widget | An iframe widget served from `support.superx.gg`, embedded with one script tag on every store page |
-| D5 | Ops desk | The reviews responder (play-review-responder) moves to `ops.superx.gg` as the *White Glove Desk*: domain first, then multi-game, then reskin |
-| D6 | Look | Product chrome follows the SuperTuned identity (Paper/Ink, White Glove dot for support, In the Pink for the store). Game art supplies game colour; chrome never does |
-| D7 | Public copy | No payment-vendor names in player-facing copy (SuperX one-pager rule). This changes live bot copy today — §9.3 |
+| D1 | Domains | `support.superx.gg` (players), `ops.superx.gg` (staff). Storefronts keep their domains |
+| D2 | Who serves support.superx.gg | **A Next.js app in the `superx-community` Vercel team**, built from the `support-announcements` pages, signed in with the Prime Rush Supabase project. **SupportBot is its backend** (agent, KB, tickets, takeover). Not the FastAPI help-site sample — that stays as the design reference |
+| D3 | One ticket store | SupportBot's. The `support.*` Supabase schema on the branch is **not** deployed; its taxonomy (types, ~39 sub-categories) and ticket-id format are adopted into SupportBot |
+| D4 | Identity across stores | A **player assertion**: each store's server signs a 5-minute token stating who the player is and how they proved it. Works across every domain; no shared cookie needed (§3) |
+| D5 | The SuperX account | The Prime Rush Supabase auth project becomes the SuperX account for support. TC/MG players can link into it later; until then their assertion carries game ids only |
+| D6 | Widget | One script from `support.superx.gg`, iframe-based, on every store and hub |
+| D7 | Ops desk | The responder moves to `ops.superx.gg` as the *White Glove Desk*; staff sign-in follows the GameGateway pattern (Google, `ADMIN_GOOGLE_ALLOWED_DOMAINS`) |
+| D8 | Look | SuperTuned identity: Paper/Ink chrome, White Glove for support, In the Pink for store moments; game art carries game colour |
 
 ---
 
-## 1 · What exists today
+## 3 · Identity: the player assertion
 
-### 1.1 SuperX, live
+### 3.1 Why not a shared cookie
 
-- `superx.gg` — "SuperX Store | Play our games": landing with Prime Rush, Tower Conquest, MaskGun.
-- Per-game hubs on subdomains: `primerush.superx.gg` ("The Hub"), `towerconquest.superx.gg`,
-  `maskgun.superx.gg`. Prime Rush nav: **Collection · Tasks (rewards) · Store · Teams · Custom
-  Rooms · Creators**. Collection pages are per item (`/collection/gun_smg_01_skin_0013_evox1`)
-  with series (Loud, Latam Legends, Bharat, Nippon …) and rarities (Prismatic, Legendary, Epic).
-- **Support today = a footer link to Discord.** That is the slot this spec replaces.
-- Code: `JuneSoftware/primerush-creators` (branches `market-place`, `global-store`,
-  `membership-live`), `JuneSoftware/superx-tc`, Vercel project `superx-community/primerush-creators`.
-  Stack per our specs: Next.js + Supabase + the web-payments provider.
-  Auth per `PRIME-RUSH-CATALOG-SPEC.md §3`: in-game deep link `/ingame?sessionToken=<JWT>`,
-  SID + OTP (planned), email/password fallback; profile via SuperX `/users/me`; grants via
-  `IndusGrantRequest`.
+Storefronts span superx.gg, primerush.gg, primerushgame.com and primerushmena.com, and the
+in-game webview blocks third-party cookies. A `.superx.gg` cookie would cover two of ten
+domains. So identity travels as a signed token from the store's server.
 
-> ⚠️ **Not yet reviewed:** those repos are private and weren't readable from this session. Every
-> claim about SuperX code in this spec comes from the live site and our own specs. §11 lists what
-> must be verified against the code before build starts. The local `superx-next` repo is a
-> Fortnite-API prototype and is **not** the live platform.
+### 3.2 The token
 
-### 1.2 Support platform (PrimeRush-Bot, FastAPI on Railway)
+Minted server-side by each storefront (`POST /api/support/assertion` in each repo), signed
+with a per-store key registered in SupportBot (Ed25519, key id per store), 5-minute expiry,
+single use (`jti`):
 
-Shadow-tested and running: SID-first chat agent (game → SID → name confirm → recognition with
-percentile highlights → issue loop), cost-tiered router (canned → approved cache → KB RAG →
-escalate), purchase and ban intents, typo-tolerant intents, menus, player memory, bug intake,
-live human takeover, 1–5 star ratings, ticketing (priority/assignee/SLA/audit), partner API
-(`/api/partner/*`, SPEC-10), the public help-site sample with host routing
-(`support.primerush.gg` → root), and self-provisioning content at boot.
-
-### 1.3 Ops dashboard (play-review-responder, Flask on Railway)
-
-Google sign-in, roles. Tabs: Reviews (store review responder), Cheaters, Match Analyzer,
-Diagnostics, Support, SupportKB, Ticket Review, Support Chat, Support Settings, Weapon Meta,
-Weapon Config, Admin.
-
----
-
-## 2 · Target shape
-
-```
-                        superx.gg  (landing — In the Pink)
-                            │
-   ┌────────────────────────┼─────────────────────────────┐
-   │                        │                             │
-webstore.superx.gg   primerush.superx.gg …          support.superx.gg   ← NEW (White Glove)
-(cross-game front)   (per-game hubs: Store,         help centre · chat · tickets · My SuperX
-                      Collection, Tasks…)                 │   widget.js (iframe)
-   │   ▲ widget on every page ────────────────────────────┘
-   │   │
-   └───┴── one SuperX session (cookie on .superx.gg)
-                            │
-             ┌──────────────┴───────────────┐
-        SuperX (Supabase)             SupportBot (Railway)  ── game backends (Mongo per game)
-        accounts · game ids ·         tickets · chats · KB ·
-        orders · rewards              agent · partner API
-                                             │
-                                     ops.superx.gg  ← reviews responder becomes the White Glove Desk
+```json
+{
+  "iss": "superx-tc:towerconquest",        "aud": "support.superx.gg",
+  "game": "towerconquest",  "sku": "global",
+  "sid": "ABCD-1234",  "gid": "<game account id>",  "nk": "PlayerName",
+  "proof": "otp|game|google|apple|supabase|sid",
+  "superx_user": "<supabase uuid, if any>",
+  "ctx": {"page": "checkout", "order_id": "…", "error": "…", "locale": "pt-BR"},
+  "iat": 0, "exp": 0, "jti": "…"
+}
 ```
 
-| Surface | Audience | Colour (identity) | Hosted |
-|---|---|---|---|
-| `superx.gg`, `webstore.superx.gg`, `<game>.superx.gg` | players | In the Pink | Vercel (unchanged) |
-| `support.superx.gg` + widget | players | White Glove | SupportBot on Railway (custom domain) |
-| `ops.superx.gg` | staff | White Glove (Desk), ink mode | responder on Railway (custom domain) |
+- `primerush-creators`: mint from the Supabase session (`proof: supabase`), include
+  `game_accounts` short ids.
+- `superx-tc`: mint from `getSession()`; `proof` = the session's `auth`.
+- The widget never sees a long-lived credential; the token goes iframe-ward via `postMessage`
+  and is exchanged by support's server for a support session cookie on `support.superx.gg`.
 
----
+### 3.3 Trust levels
 
-## 3 · Identity and sign-in (one account, many games)
-
-### 3.1 Model
-
-- **SuperX account** — the person. Supabase `auth.users` + `profiles`.
-- **Game identity** — one row per (account, game): `game_identities(account_id, game, sid,
-  user_id, linked_via, linked_at)`. Unique on (game, sid). Matches the
-  `game_identities` table proposed in `PRIME-RUSH-CATALOG-SPEC.md §5`.
-- Guests are first-class: a guest SID gets a SuperX account the first time it signs in (the
-  synthetic `{SID}@…` pattern in the catalog spec; domain still open — Q4).
-
-### 3.2 How a player arrives signed in
-
-| Entry | Mechanism |
-|---|---|
-| From the game (Support button) | Existing `/ingame?sessionToken=<JWT>` → SuperX verifies, mints the Supabase session, **then** redirects to `support.superx.gg/<game>/chat?ctx=…` (SPEC-04 context payload rides along) |
-| From a SuperX store page | Already signed in; cookie on `.superx.gg` is visible to `support.superx.gg` |
-| Directly | Sign in with SID + OTP (to the in-game inbox), Google, or email; guest browsing needs no sign-in |
-| Store on a non-superx domain (`primerushgame.com`, MENA) | Third-party cookies are blocked (Safari, in-game webviews), so the widget gets a **short-lived signed handoff token** via `postMessage` from the host page, exchanged server-side |
-
-**Required SuperX change:** set the Supabase SSR cookie domain to `.superx.gg` (SameSite=Lax,
-Secure). Host-only cookies (the default) would force a second sign-in on `support.`. If the
-deep-link route still only forwards `?userid=` (catalog spec gap), it must create a real session
-first — support can't trust an unsigned id.
-
-### 3.3 How support trusts the session
-
-SupportBot verifies the Supabase JWT on every player request (JWKS from the SuperX Supabase
-project, cached), reads `account_id`, and resolves game identities through a new SuperX
-server-to-server endpoint. **All account-scoped reads key off the verified identity** — the
-SPEC-08 cross-player guarantee now rests on a real session instead of "the SID the player
-typed". Typing a SID is still allowed for guests, but only unlocks KB answers and ticket filing,
-never purchase or account detail, until the SID is proved (OTP or game deep link).
-
-| Trust level | How | Unlocks |
+| Level | From | Unlocks |
 |---|---|---|
-| Anonymous | none | KB, search, chat on KB topics |
-| Claimed SID | typed | file a ticket, generic answers |
-| Verified | SuperX session with linked identity | purchases, collection, ban status, tickets, offers |
+| Anonymous | nothing | KB, search, chat on KB topics |
+| Claimed | typed SID, or `proof: sid` | file a ticket, generic answers |
+| Proven | `proof` ∈ otp, game, google, apple, supabase | purchases, collection, ban status, ticket history, offers |
 | Staff | Google SSO on `ops.` | everything, audited |
 
-### 3.4 Staff sign-in
+TC's `?sid=` launch login sets `auth: "sid"`: **not proven** — the support agent must not
+show purchases on it. The SPEC-08 cross-player guarantee now rests on a signed assertion
+instead of "the SID the player typed".
 
-`ops.superx.gg` keeps the responder's Google sign-in, restricted to staff domains, with existing
-roles. Every staff action already writes `ticket_events`; extend actor to the Google email
-(already forwarded as `X-Staff-Email`).
+### 3.4 Direct visits to support.superx.gg
 
----
-
-## 4 · Multi-game support (Prime Rush, Tower Conquest, MaskGun)
-
-SupportBot is single-game today. Changes:
-
-- **`game` everywhere:** add `game` to `conversations`, `chat_sessions`, `kb_articles`,
-  `canned`, `suggestions` (default `primerush`; backfill existing rows).
-- **Player-context adapters:** `player_context` becomes an interface with one adapter per game.
-  Prime Rush = `brx_main` (done). Tower Conquest and MaskGun adapters need their schemas
-  (Q6) — until then those games run KB-only + ticketing.
-- **KB per game, shared articles allowed:** account, payments and SuperX-store articles are
-  `game='all'`; gameplay articles are per game.
-- **Routing:** `support.superx.gg/<game>/…` sets the game; the widget sets it from
-  `data-game`; the chat's "Which game?" step is skipped whenever the game is known.
-- **Per-game SKUs:** Prime Rush has LatAm (`primerush.gg`), Global and MENA SKUs. Model these as
-  game identities of the same game with a `sku` column, not separate games.
+Sign in with the same Supabase project (Google, or SID + inbox OTP — the code path already in
+`primerush-creators` main). TC/MG players use SID + OTP against their game backend through a
+SupportBot adapter, or arrive via the widget.
 
 ---
 
-## 5 · support.superx.gg — the player service
+## 4 · Multi-game
 
-### 5.1 Pages
+- `game` (and `sku`) on every SupportBot table that holds player content: conversations,
+  chat_sessions, suggestions, kb_articles, canned. Backfill `primerush`.
+- Player-context adapters: Prime Rush = brx Mongo (done; SuperX `/users/me` `Support` block is
+  a cheaper source for state/bans/devices); TC = game API (`Player/WebProfile`,
+  `store_transactions`); MG = `/web/v1/players/profile`, `/web/v1/purchases/*`. Signed calls
+  reuse the keys the stores already hold — SupportBot gets its own service keys, never the
+  stores'.
+- KB per game; account/payments/SuperX articles shared (`game='all'`).
+- Prime Rush SKUs (latam, global, mena) are `sku`, not separate games — matches
+  `game_accounts.game_sku`.
 
-| Route | Content |
+---
+
+## 5 · support.superx.gg
+
+### 5.1 Build
+
+New Next.js app (or a route group in `primerush-creators` deployed as its own Vercel project)
+in `superx-community`. Start from `support-announcements` (pages, i18n en/br/mxn, Supabase
+auth plumbing); replace its tables and agent with calls to SupportBot:
+
+| Page | Content |
 |---|---|
-| `/` | Pick a game · search across all games · if signed in: your open tickets and a "continue chat" card |
-| `/<game>` | Game help centre: categories, top articles, chat CTA (SPEC-02 layout, per game) |
-| `/<game>/a/<slug>` | Article · helpful vote · related · chat CTA |
-| `/<game>/chat` | Full-page chat (the SPEC-08 agent, now authenticated) |
-| `/tickets`, `/tickets/<public_id>` | All your tickets across games · thread · status timeline · reply |
-| `/me` | **My SuperX** — §6 |
-| `/widget` | The iframe target for widget.js |
+| `/` | game picker, search, signed-in strip with open tickets |
+| `/<game>` | help centre for one game |
+| `/<game>/a/<slug>` | article |
+| `/<game>/chat` | chat with the SupportBot agent (authenticated) |
+| `/tickets`, `/tickets/<id>`, `/tickets/new` | the player's tickets across games |
+| `/me` | My SuperX (§6) |
+| `/widget` | iframe target |
 
-### 5.2 Serving
+### 5.2 SupportBot API for it
 
-SupportBot already serves the help-site sample with host routing (`app/web_support.py`). Change
-`SUPPORT_SITE_HOST` to accept a list (`support.superx.gg,support.primerush.gg`), add the `game`
-path segment, and add the Railway custom domain. The existing design package
-(`templates/web/`) is restyled to the White Glove identity (§9) — same templates, new tokens.
+Extend the SPEC-10 partner API into a player API, called server-side by support.superx.gg
+with its service key **plus** the verified player assertion:
 
-### 5.3 Chat, authenticated
+- `POST /api/partner/session` — exchange assertion → player context id
+- chat: `POST /api/partner/chat/sessions`, `…/messages`, `GET …/messages?after_id` (the
+  SPEC-08 engine; SID step skipped when proven)
+- tickets: list, detail, create (with taxonomy), reply
+- KB: `GET /api/partner/kb?game=&q=`
 
-Same engine, three changes: (1) identity comes from the session, so the SID step disappears for
-signed-in players; (2) the purchase intent can show **store orders** (SuperX) alongside in-game
-purchases (game backend) — one list, labelled by where it was bought; (3) escalations create a
-ticket the player can see in `/tickets` and in My SuperX immediately.
-
----
-
-## 6 · My SuperX — one place for the player
-
-A signed-in account page shared by the store and support (built once, in the SuperX app, and
-linked from both; support renders the Tickets tab itself).
-
-| Tab | Source | Shows |
-|---|---|---|
-| Profile | SuperX + game backend | name, linked games and SIDs, member since, highlights (SPEC-05 percentiles — never spend) |
-| Collection | game backend `owned[]` + catalog | owned items by series and rarity, with what's missing from each series |
-| Purchases | SuperX orders + game `user.transaction` | completed purchases, labelled App Store / Google Play / SuperX store; "something missing?" opens chat with that order as context |
-| Tickets | SupportBot partner API | open and resolved tickets, replies, ratings |
-| Rewards | SuperX tasks | tasks, claimable rewards |
-
-Rules: player-safe serialization only (SPEC-10 §2) — no priority, assignee, internal notes or
-suggestions ever leave SupportBot. Money stays invisible in highlights and recognition.
+Retire the public `/chat` once superx-tc moves to the widget (F1/F2 cover the meantime).
 
 ---
 
-## 7 · The store widget
+## 6 · My SuperX
 
-### 7.1 Embed
+One account page (`support.superx.gg/me`, linked from every store and hub):
+
+| Tab | Source |
+|---|---|
+| Profile | SuperX `/users/me` + game profile; highlights (never spend) |
+| Collection | Prime Rush: SuperX `ownedAttributes` + `collection/items.json` (already used by `/mycollection`); TC/MG: game profile inventory |
+| Purchases | Prime Rush: `public.transactions` + SuperX transactions (service-side); TC/MG: game backend orders. Labelled App Store / Google Play / SuperX store. Fills the "no player-facing order history" gap in both repos |
+| Tickets | SupportBot |
+| Rewards | Prime Rush `rewards.*`; TC/MG coupons ledger |
+
+Player-safe serialization only (SPEC-10 §2).
+
+---
+
+## 7 · The widget
 
 ```html
-<script src="https://support.superx.gg/widget.js" data-game="primerush" async></script>
+<script src="https://support.superx.gg/widget.js" data-game="towerconquest" async></script>
 ```
 
-- Renders a launcher (White Glove mark) bottom-right; opens an iframe of `/widget`.
-- **Context in:** the host page posts `{page: 'item'|'store'|'checkout'|'collection', item_id,
-  order_id, error_code}` so the agent opens on the right topic ("Problem with this purchase?").
-- **Identity in:** same-site → the `.superx.gg` cookie is already there; cross-site → handoff
-  token (§3.2).
-- **Events out:** `open`, `resolved`, `offer_click(item_id)` → the host page can add to cart or
-  navigate.
-- **Budget:** loader ≤ 6 KB gzipped; iframe loads only on first open. No layout shift.
-- **Webview:** the in-game store runs in a webview — test cookies, storage and `postMessage`
-  there first (§12 Phase B gate).
-
-### 7.2 Security
-
-Store pages: CSP `frame-src https://support.superx.gg; script-src … https://support.superx.gg`.
-Support: `frame-ancestors https://*.superx.gg <allow-listed store domains>`. `postMessage`
-origin-checked both ways. Widget never receives a session token in the URL.
-
-### 7.3 Contextual triggers (opt-in per page)
-
-| Where | Trigger | Agent opens with |
-|---|---|---|
-| Checkout failure | payment error code | "That payment didn't go through — want me to check your account?" |
-| Item page | dwell + "Help" tap | item-aware answers (what's in it, how to equip) |
-| Collection | missing-item report | owned vs. purchased reconciliation |
+- Launcher (White Glove mark) + iframe of `/widget`, loaded on first open; loader ≤ 6 KB.
+- Host page calls `SuperXSupport.identify(fetch('/api/support/assertion'))` when signed in and
+  `SuperXSupport.context({page, order_id, error})` on checkout failures and item pages.
+- Events out: `resolved`, `offer_click(sku)` → host adds to cart.
+- Mounts: primerush-creators inside `AuthProvider` next to the toasters (`app/layout.tsx:86-87`),
+  avoid `z-50` (navbar, loader); superx-tc in `SiteChrome`, replacing `ChatWidget`.
+- Neither repo sets CSP today, so embedding works; add `frame-src https://support.superx.gg`
+  deliberately, and `frame-ancestors` on support for the allow-listed store domains.
+  `postMessage` origin-checked both ways.
 
 ---
 
-## 8 · Selling inside support (the upsell, done carefully)
+## 8 · Selling inside support
 
-Extends SPEC-06 with the store now on the same account.
-
-- **When:** only after a resolved conversation with CSAT ≥ 4 stars or 👍; never during payment
-  disputes, refunds, bans, or for minor-flagged accounts; at most one offer per player per 14
-  days.
-- **What:** collection-aware — items that complete a series the player is collecting, or the
-  current featured item for a game they play. Prices and items come only from the SuperX
-  catalog; the agent never generates a price.
-- **How it looks:** an In-the-Pink card inside the White Glove chat ("From the store"); one tap
-  opens the store item (or adds to cart via widget event).
-- **Measured:** agent-attributed purchases are tracked apart from store revenue and graded
-  against a holdout by default (SuperX one-pager). Dashboard: offers shown → opened → bought,
-  CSAT with vs. without offers.
+- Only after a resolved chat rated ≥ 4 stars; never during payment disputes, refunds, bans, or
+  for minor-flagged accounts; one offer per player per 14 days.
+- Collection-aware: complete a series the player is collecting, or the current featured item.
+  Items and prices from each store's catalog (`/api/store/featured`, Xsolla catalog), never
+  generated.
+- Mechanism: reuse the TC/MG coupon system (issue a support coupon via the existing mail/push
+  delivery) and Prime Rush creator/redeem codes; deep link with the coupon applied.
+- Attributed separately from store revenue, graded against a holdout.
 
 ---
 
-## 9 · Look and voice — the SuperTuned identity
-
-### 9.1 Tokens
+## 9 · Look and voice — SuperTuned identity
 
 | Token | Value | Use |
 |---|---|---|
-| `--ink` | `#0A0A0A` | text, rules, dark bands, ops desk background |
-| `--paper` | `#F7F5F1` | player-facing background |
-| `--signal` | `#FF5B2E` | the only accent; ≤5% of a screen (live dots, focus) |
-| `--glove` | `#FFFFFF` with 1.5px ink outline | White Glove dot (support): logo dot, headline period |
-| `--pink` | `#F5308C` | In the Pink (store): store links, offer cards, the store's headline period |
-| Display / body | Geist | 18px body, tight display tracking |
-| Labels | JetBrains Mono | 11–12px, uppercase, 0.12em |
+| `--ink` | `#0A0A0A` | text, rules, ops desk |
+| `--paper` | `#F7F5F1` | player background |
+| `--signal` | `#FF5B2E` | ≤5% — live states |
+| White Glove | white dot, ink outline | support mark, headline period |
+| In the Pink | `#F5308C` | store links, offer cards |
+| Type | Geist; JetBrains Mono labels | |
 
-No gradients, no glassmorphism, 1px rules. Every page headline ends in a period set in the
-product colour: white-with-outline on support, pink on store moments.
-
-### 9.2 Game colour
-
-Game art (characters, weapon renders, series banners) carries the game's colour inside
-image tiles and hero bands. Chrome stays Paper/Ink. Inside the game webview the support pages
-switch to an ink background (same tokens, inverted) to sit naturally inside the game.
-
-This supersedes the dark SuperGaming monochrome direction in SPEC-02a for SuperX surfaces; the
-Claude Design package's templates are reused with the new tokens.
-
-### 9.3 Copy rules (and one fix needed now)
-
-- **No payment-vendor names** in player copy. The live bot says "36 purchase(s) via Apple,
-  XSolla" — change player-facing labels to **App Store · Google Play · SuperX store**
-  (`app/player_context._PAYMENT_LABELS`). Raw values stay in the DB and on the ops desk.
-- Calm, specific, no hype; money never appears in praise or recognition.
+Stores keep their own game themes (Prime Rush amber/Neusharp, TC purple/Grobold, MG navy);
+the widget and support site use the White Glove chrome so support looks the same in every
+game. In-game webview: ink variant.
 
 ---
 
-## 10 · The ops desk on SuperX (reviews responder → ops.superx.gg)
+## 10 · The ops desk (responder → ops.superx.gg)
 
-| Step | Change |
-|---|---|
-| 1 · Domain | Add `ops.superx.gg` as a Railway custom domain on the responder; add it to the Google OAuth redirect URIs; keep the old URL working |
-| 2 · Multi-game | `game` filter across Reviews, Ticket Review, Support Chat, SupportKB; per-game app config for store reviews (`APPS_CONFIG` already holds several apps) |
-| 3 · Unified inbox | One queue across channels: Chat, Discord, Email, Freshdesk, **store reviews** — same priority/SLA/assignee model (SPEC-09), review replies drafted by the agent and approved by staff |
-| 4 · Player card | Every item shows the linked SuperX account: games, collection value band, open tickets, store orders (staff can see vendors and amounts) |
-| 5 · Reskin | White Glove Desk theme (ink mode). Game-ops tools (Cheaters, Match Analyzer, Weapon Meta/Config) stay in the same app under a "Game ops" group, staff-only |
-
-Live takeover, ratings, outreach and recommendations carry over unchanged.
-
----
-
-## 11 · Before build: what must be verified in SuperX code
-
-| Check | Where | Why |
-|---|---|---|
-| Session creation in `/ingame` | `primerush-creators` (`membership-live`) | §3.2 assumes a real Supabase session; the catalog spec says it only forwards `?userid=` |
-| Cookie domain + `@supabase/ssr` setup | same | `.superx.gg` sharing (§3.2) |
-| `game_identities` (or equivalent) | Supabase schema | §3.1 |
-| Order model + webhook | `global-store` / `market-place` | store orders in Purchases (§6) and chat (§5.3) |
-| How the 3 game hubs are deployed (one project + middleware, or three) | Vercel `superx-community` | widget `data-game` defaults, CSP per project |
-| Existing CSP / headers | `next.config` / middleware | widget embed (§7.2) |
-| `superx-tc` contents | repo | scope unknown — terms/conditions or a separate service |
+1. Railway custom domain `ops.superx.gg`; add to Google OAuth redirect URIs; old URL keeps
+   working.
+2. `game` filter across Reviews, Ticket Review, Support Chat, KB.
+3. One inbox: chat, Discord, email, Freshdesk, store reviews; SPEC-09 priority/SLA/assignee.
+4. Player card from the assertion / SuperX `/users/me` `Support` block; staff see vendors and
+   amounts.
+5. White Glove Desk theme (ink). Game ops (Cheaters, Match Analyzer, Weapon Meta/Config) stay,
+   staff-only.
 
 ---
 
-## 12 · Phases
+## 11 · Phases
 
 | Phase | Ships | Done when |
 |---|---|---|
-| **A · Domains (≈1 week)** | `support.superx.gg` serving today's help site for Prime Rush; `ops.superx.gg` alias; game hubs' SUPPORT link → `support.superx.gg/primerush` instead of Discord | both domains with certificates; no regression on `support.primerush.gg`; vendor-name copy fix (§9.3) |
-| **B · One sign-in + widget v1** | `.superx.gg` session trusted by SupportBot; widget on `primerush.superx.gg/store` | signed-in player chats with no SID step; webview test passes (cookie, iframe, postMessage) |
-| **C · My SuperX** | Profile, Collection, Purchases (store + in-game), Tickets | a player sees one order list and every ticket across channels in one place |
-| **D · All games** | `game` dimension; KB-only + ticketing for Tower Conquest and MaskGun; adapters as schemas arrive | each game hub's widget opens in the right game |
-| **E · Selling in support** | collection-aware offers with holdout | attributed revenue and CSAT reported per offer cohort |
-| **F · White Glove Desk** | unified inbox incl. store reviews, multi-game filters, reskin | one queue for every channel and game |
+| **0 · Fix first** | F1–F5 | TC chats tagged `game=towerconquest` with no Prime Rush answers; `/chat` keyed + rate-limited; brx-store `/ingame` verifies; key rotated; vendor names gone |
+| **A · Domains** | `support.superx.gg` (Next.js shell + KB) and `ops.superx.gg` | both live; hub footer SUPPORT → support.superx.gg |
+| **B · Assertion + widget** | assertion endpoint in both repos; widget replaces TC `ChatWidget`; on primerush hub | proven player chats with no SID step on TC and Prime Rush; webview test passes |
+| **C · Tickets + My SuperX** | partner player API; tickets pages; My SuperX with purchases | one order list and every ticket in one place |
+| **D · All games** | TC + MG adapters and KBs; MG `supportChat` on | each store's widget answers for its own game |
+| **E · Selling** | support coupons + holdout | attributed revenue and CSAT per cohort |
+| **F · White Glove Desk** | unified inbox, multi-game, reskin | one queue for every channel and game |
 
 ---
 
-## 13 · Open questions
+## 12 · Open questions
 
-1. **Domains:** confirm `support.superx.gg` + `ops.superx.gg`; is `webstore.superx.gg` a new
-   cross-game front, or a rename of an existing hub?
-2. **Repo access:** add the SuperX repos to a folder I can read (or reconnect GitHub) for §11.
-3. **`superx-tc`:** what is it?
-4. **Guest accounts:** domain for synthetic guest emails (catalog spec item 10).
-5. **Ops desk name:** "White Glove Desk" on `ops.superx.gg`, or keep the current name?
-6. **Tower Conquest and MaskGun:** which backends and schemas hold their players and purchases?
-7. **Discord:** keep the Discord server as a channel feeding the same inbox (recommended), or
-   retire it once `support.superx.gg` is live?
-8. **Domain renewal:** `superx.gg` auto-renew is off (expires 2027-06-11, per the SuperTuned
-   domain doc) — turn it on before support runs on it.
+1. Which Supabase project is the auth project — `kqzyvanoevklcipnzxzj` or
+   `uqqagabepyqsquxvrvnf`? (`NEXT_PUBLIC_SUPABASE_URL` is env-only.) And does
+   `www.superx.gg` (community-tools) use the same one?
+2. Confirm Vercel branches: `primerush-store-global` ← `global-store`, `mena-store` ←
+   `mena-store`.
+3. `support-announcements` (LeeCory): adopt its pages as the support.superx.gg starting point
+   (D2/D3), or was it abandoned for a reason?
+4. `webstore.superx.gg`: new cross-game front, or not needed?
+5. Ops desk name: "White Glove Desk" on `ops.superx.gg`?
+6. Discord: keep as a channel into the same inbox (recommended)?
+7. `superx.gg` auto-renew is off (expires 2027-06-11) — turn it on before support depends on it.
+8. Several env vars are set in Vercel but never read by the code (`EDGE_CONFIG`,
+   `INDUS_AUTH_URL`, `INDUS_API_KEY`, `SUPERX_SERVICE_TOKEN`, `XSOLLA_PROJECT_ID`,
+   `XSOLLA_MERCHANT_ID` on primerush-creators) — clean up, or are they read by something
+   not in the repo?
