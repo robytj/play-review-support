@@ -69,5 +69,6 @@ One set of ids everywhere (from GameGateway): `prime-rush-latam`, `prime-rush-gl
 2. Can the TC and Prime Rush backends add a launch-code exchange like MaskGun's
    `/web/v1/launch/exchange`? (Needed for D3.)
 3. Who owns GameGateway (sreejitj per the last commit)? D6 grows its scope.
-4. Persona names for each game — proposals in `02` §4.
+4. Persona characters for each game — proposals in `02` §4; Tower Conquest and Prime Rush
+   MENA need a named character from their rosters.
 5. `superx.gg` auto-renew is off (expires 2027-06-11).
