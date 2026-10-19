@@ -27,6 +27,9 @@ Games and app ids. Use these everywhere; they match GameGateway:
 - **Clickable prototype:** `design/superx/prototype/index.html`. 23 linked pages across all
   three sites, in the Zero theme. Open it in a browser; every link works. To change it, edit
   `design/superx/prototype/_build/build.py` and run `python3 design/superx/prototype/_build/build.py`.
+- **Hosted for the team:** Railway project **support** serves the prototype (password-protected
+  when `SHARE_PASSWORD` is set; user `team`). Redeploy after changes: `cd design/superx/prototype
+  && railway up`.
 - **Chat mocks:** `design/superx/chat-mocks.html`. How a concierge conversation should look
   and feel.
 - **Design reference:** zero.supertuned.ai. Same layout, type and tokens (§8).
