@@ -1,0 +1,168 @@
+<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><title>Store ops · SuperX Ops</title><style>
+:root{
+  --ink:#0A0A0A; --ink2:#4A4845; --ink3:#868079;
+  --paper:#F7F5F1; --paper2:#EFEDE7; --card:#FFFFFF;
+  --line:#E3E0DA; --line2:#D2CFC9;
+  --pink:#F5308C; --signal:#FF5B2E; --green:#00C267; --okd:#079150;
+  --pr:#F7C600; --tc:#7C3AED; --mg:#FFB400;
+  --mono:'JetBrains Mono',ui-monospace,SFMono-Regular,Menlo,monospace;
+}
+*{box-sizing:border-box;margin:0;padding:0}
+html,body{background:var(--paper);color:var(--ink);font:14px/1.45 Geist,system-ui,-apple-system,'Helvetica Neue',Arial,sans-serif;-webkit-font-smoothing:antialiased}
+a{color:inherit;text-decoration:none}
+.app{display:grid;grid-template-columns:232px 1fr 372px;min-height:100vh}
+.app.nodock{grid-template-columns:232px 1fr}
+/* nav */
+nav.side{background:var(--ink);color:#EDEAE4;padding:20px 14px;display:flex;flex-direction:column;gap:2px;position:sticky;top:0;height:100vh}
+.brandrow{display:flex;align-items:center;gap:10px;padding:2px 8px 18px}
+.blogo{width:30px;height:30px;color:#EDEAE4;flex:none}
+.brand{font-weight:700;font-size:21px;letter-spacing:-.02em;line-height:1}
+.brand b,h1 b,h2 b,.t b{color:var(--pink)}
+.by{font:500 10px var(--mono);color:#8E8A84;letter-spacing:.06em;text-transform:uppercase;margin-top:3px}
+.ask{display:flex;align-items:center;gap:8px;background:#1C1B1A;border:1px solid #2E2C2A;border-radius:10px;padding:9px 10px;margin:0 0 14px;color:#B9B4AC;font-size:13px}
+.ask kbd{margin-left:auto;font:500 10px var(--mono);color:#8E8A84;border:1px solid #3A3835;border-radius:4px;padding:1px 5px}
+.navh{font:500 10px var(--mono);color:#7D7972;letter-spacing:.1em;text-transform:uppercase;padding:14px 8px 6px}
+.ni{display:flex;align-items:center;gap:10px;padding:7px 8px;border-radius:8px;color:#CFCAC2;font-size:13.5px}
+.ni:hover{background:#1A1918}
+.ni.on{background:#232120;color:#fff}
+.ni .c{margin-left:auto;font:500 11px var(--mono);color:#8E8A84}
+.ni .c.hot{color:var(--signal)}
+.dot{width:8px;height:8px;border-radius:50%;flex:none;display:inline-block}
+.navfoot{margin-top:auto;padding:12px 8px 0;border-top:1px solid #2A2826;font:500 10.5px var(--mono);color:#7D7972;line-height:1.7}
+.navfoot b{color:var(--green);font-weight:500}
+/* main */
+main{padding:22px 28px 40px;display:flex;flex-direction:column;gap:16px;min-width:0}
+.top{display:flex;align-items:flex-end;justify-content:space-between;gap:16px}
+.eyebrow{font:500 11px var(--mono);letter-spacing:.1em;text-transform:uppercase;color:var(--ink3)}
+h1{font-size:30px;letter-spacing:-.025em;font-weight:700;line-height:1.1;margin-top:6px}
+h2{font-size:18px;letter-spacing:-.02em;font-weight:700}
+.crumbs{font:500 11px var(--mono);color:var(--ink3);white-space:nowrap}
+.crumbs span{color:var(--ink)}
+.grid{display:grid;gap:12px}
+.g2{grid-template-columns:1fr 1fr}.g3{grid-template-columns:repeat(3,1fr)}.g4{grid-template-columns:repeat(4,1fr)}
+.g21{grid-template-columns:1.25fr 1fr}
+.bcard{background:var(--card);border:1px solid var(--line);border-radius:12px;padding:12px 14px;display:block}
+.bcard .k{font:500 10.5px var(--mono);letter-spacing:.08em;text-transform:uppercase;color:var(--ink3);display:flex;align-items:center;gap:6px}
+.bcard .n{font-size:26px;font-weight:700;letter-spacing:-.02em;margin:4px 0 2px}
+.bcard .s{font-size:12.5px;color:var(--ink2)}
+a.bcard:hover,a.row:hover{border-color:var(--ink3)}
+.panel{background:var(--card);border:1px solid var(--line);border-radius:14px;padding:16px 18px}
+.ph{display:flex;align-items:center;gap:10px;margin-bottom:10px;flex-wrap:wrap}
+.ph .tag:first-of-type{margin-left:auto}
+.tag{font:500 10.5px var(--mono);border:1px solid var(--line2);border-radius:999px;padding:2px 8px;color:var(--ink2);white-space:nowrap;display:inline-flex;align-items:center;gap:5px}
+.tag.o{border-color:var(--signal);color:var(--signal)}
+.tag.p{border-color:var(--pink);color:var(--pink)}
+.tag.g{border-color:var(--okd);color:var(--okd)}
+.tag.f{background:var(--ink);color:#fff;border-color:var(--ink)}
+.summary{background:var(--paper);border-radius:10px;padding:11px 13px;font-size:13.5px}
+.summary .k{font:500 10px var(--mono);letter-spacing:.08em;text-transform:uppercase;color:var(--ink3);display:block;margin-bottom:4px}
+.facts{display:grid;grid-template-columns:repeat(3,1fr);gap:8px}
+.fact{border:1px solid var(--line);border-radius:10px;padding:8px 10px}
+.fact .k{font:500 10px var(--mono);letter-spacing:.06em;text-transform:uppercase;color:var(--ink3)}
+.fact .v{font-size:13px;font-weight:600;margin-top:2px}
+.rows{display:flex;flex-direction:column;gap:7px}
+.row{display:grid;grid-template-columns:18px 1fr auto;gap:10px;align-items:center;padding:9px 11px;border:1px solid var(--line);border-radius:10px;background:var(--card)}
+.row.nod{grid-template-columns:1fr auto}
+.row .nm{font-weight:600;font-size:13px}
+.row .nm small{font:500 10.5px var(--mono);color:var(--ink3);font-weight:500;margin-left:6px}
+.row .act{font-size:12px;color:var(--ink2);margin-top:1px}
+.row .st{font:500 10.5px var(--mono);color:var(--ink3);text-align:right;white-space:nowrap}
+.st.ok{color:var(--okd)}.st.wait{color:var(--signal)}.st.pk{color:var(--pink)}
+.ring{width:14px;height:14px;border-radius:50%;border:2px solid var(--ink);display:grid;place-items:center}
+.ring i{width:6px;height:6px;border-radius:50%;display:block}
+.tl{position:relative;padding-left:16px}
+.tl:before{content:"";position:absolute;left:4px;top:6px;bottom:6px;width:1px;background:var(--line2)}
+.ev{position:relative;padding:0 0 11px}
+.ev:before{content:"";position:absolute;left:-15px;top:6px;width:9px;height:9px;border-radius:50%;background:var(--card);border:2px solid var(--ink3)}
+.ev.o:before{border-color:var(--pink);background:var(--pink)}
+.ev .when{font:500 10.5px var(--mono);color:var(--ink3)}
+.ev .what{font-size:13px;margin-top:1px}
+.src{display:inline-flex;align-items:center;gap:4px;font:500 10px var(--mono);color:var(--ink2);background:var(--paper2);border-radius:5px;padding:1px 6px;margin-left:4px;vertical-align:1px}
+.bar{height:4px;background:var(--paper2);border-radius:4px;margin-top:6px;overflow:hidden}
+.bar i{display:block;height:100%;background:var(--ink)}
+.bar.pk i{background:var(--pink)}
+.btn{font:500 12px Geist,system-ui,sans-serif;border:1px solid var(--line2);background:var(--card);border-radius:8px;padding:6px 11px;display:inline-flex;align-items:center;gap:6px;cursor:pointer;white-space:nowrap}
+.btn.p{background:var(--ink);color:#fff;border-color:var(--ink)}
+.btn.o{border-color:var(--signal);color:var(--signal)}
+.btn.pk{background:var(--pink);color:#fff;border-color:var(--pink)}
+.acts{display:flex;gap:6px;flex-wrap:wrap}
+table.t2{width:100%;border-collapse:collapse;font-size:13px}
+table.t2 th{font:500 10px var(--mono);letter-spacing:.08em;text-transform:uppercase;color:var(--ink3);text-align:left;padding:8px 10px;border-bottom:1px solid var(--line)}
+table.t2 td{padding:10px;border-bottom:1px solid var(--line);vertical-align:top}
+table.t2 tr:hover td{background:var(--paper)}
+.mono{font-family:var(--mono);font-size:11.5px}
+.muted{color:var(--ink3)}
+.search{display:flex;align-items:center;gap:10px;background:var(--card);border:1px solid var(--line2);border-radius:12px;padding:12px 14px;font-size:14px;color:var(--ink3)}
+.search kbd{margin-left:auto;font:500 10px var(--mono);border:1px solid var(--line2);border-radius:4px;padding:1px 5px}
+.foot{font:500 10px var(--mono);color:var(--ink3);letter-spacing:.06em;text-align:center;margin-top:auto;padding-top:10px}
+.toggle{width:30px;height:17px;border-radius:9px;background:var(--ink);position:relative;display:inline-block;vertical-align:middle;flex:none}
+.toggle:after{content:"";position:absolute;right:2px;top:2px;width:13px;height:13px;border-radius:50%;background:#fff}
+.toggle.off{background:var(--line2)}.toggle.off:after{left:2px;right:auto}
+/* dock */
+aside.dock{background:var(--card);border-left:1px solid var(--line);display:flex;flex-direction:column;position:sticky;top:0;height:100vh}
+.dockh{padding:18px 18px 12px;border-bottom:1px solid var(--line);display:flex;align-items:center;gap:10px}
+.dockh .t{font-weight:700;font-size:15px}
+.dockh .chips{margin-left:auto;display:flex;gap:4px}
+.chip{font:500 10px var(--mono);border:1px solid var(--line2);border-radius:999px;padding:2px 7px;color:var(--ink2)}
+.chip.on{background:var(--ink);color:#fff;border-color:var(--ink)}
+.thread{flex:1;padding:14px 16px;display:flex;flex-direction:column;gap:10px;overflow:auto}
+.me{align-self:flex-end;background:var(--ink);color:#fff;border-radius:14px 14px 4px 14px;padding:9px 12px;font-size:13px;max-width:84%;position:relative}
+.me .via{display:block;font:500 9.5px var(--mono);color:#9C978F;margin-top:3px;text-align:right}
+.z{align-self:flex-start;background:var(--paper);border-radius:14px 14px 14px 4px;padding:10px 12px;font-size:13px;max-width:92%}
+.z p+p{margin-top:6px}
+.z .route{font:500 10px var(--mono);color:var(--ink3);margin-bottom:5px}
+.z ul{margin:4px 0 0 16px}
+.z .acts{margin-top:8px}
+.react{position:absolute;bottom:-9px;left:8px;background:#fff;border:1px solid var(--line);border-radius:10px;font-size:11px;padding:0 4px;line-height:16px}
+.composer{margin:0 14px 14px;border:1px solid var(--line2);border-radius:14px;padding:10px 10px 10px 14px;display:flex;align-items:center;gap:8px}
+.composer .ph2{color:var(--ink3);font-size:13px;flex:1}
+.send{width:36px;height:36px;border-radius:50%;background:var(--pink);display:grid;place-items:center;flex:none;color:#fff;font-size:15px}
+.av{width:30px;height:30px;border-radius:50%;display:grid;place-items:center;font-weight:800;font-size:13px;color:#111;flex:none}
+/* phones (chat mocks, kept) */
+.stage{padding:28px;display:flex;gap:28px;flex-wrap:wrap;align-items:flex-start}
+.phone{width:360px;height:760px;background:#0E0E10;border:1px solid #1A1A1A;border-radius:30px;overflow:hidden;position:relative;flex:none;color:#fff}
+.phone .status{height:30px;display:flex;justify-content:space-between;padding:9px 20px 0;font:500 10.5px var(--mono);opacity:.8}
+.url{margin:4px 14px 0;font:500 10.5px var(--mono);padding:6px 10px;border-radius:8px;background:rgba(255,255,255,.08);display:flex;justify-content:space-between}
+.chat-h{display:flex;align-items:center;gap:10px;padding:12px 14px;border-bottom:1px solid rgba(255,255,255,.1)}
+.chat-h .nm{font-weight:700;font-size:14px}
+.chat-h .sb{font-size:11px;opacity:.65;display:flex;align-items:center;gap:6px}
+.live{display:inline-block;width:7px;height:7px;border-radius:50%;background:var(--green)}
+.msgs{padding:12px 12px 6px;display:flex;flex-direction:column;gap:6px;font-size:13.5px;line-height:1.42}
+.b{max-width:82%;padding:8px 11px;border-radius:16px;position:relative}
+.b.u{align-self:flex-end;background:#2B2B30;border-bottom-right-radius:5px}
+.b.a{align-self:flex-start;background:#1C1C21;border-bottom-left-radius:5px}
+.b.gap{margin-top:8px}
+.b .rx{position:absolute;bottom:-9px;right:6px;background:#2B2B30;border:2px solid #0E0E10;border-radius:10px;font-size:11px;padding:0 4px;line-height:16px}
+.card{align-self:flex-start;width:86%;border-radius:14px;overflow:hidden;background:#17171B;border:1px solid rgba(255,255,255,.1)}
+.card .r1{display:flex;gap:10px;padding:10px;align-items:center}
+.thumb{width:44px;height:44px;border-radius:8px;flex:none;background:#26262B;position:relative}
+.thumb:after{content:"";position:absolute;inset:11px;border-radius:50%;background:var(--c,#888)}
+.card .ft{display:flex;justify-content:space-between;align-items:center;padding:8px 10px;border-top:1px solid rgba(255,255,255,.08);font-size:11.5px}
+.okt{color:#4ADE80;font:500 10.5px var(--mono);letter-spacing:.06em;text-transform:uppercase}
+.steps{display:flex;gap:6px;font:500 9.5px var(--mono);letter-spacing:.06em;text-transform:uppercase;padding:0 10px 10px}
+.steps span{flex:1;padding-top:6px;border-top:2px solid #444;opacity:.6}
+.steps span.on{border-color:#4ADE80;opacity:1}
+.quick{display:flex;gap:6px;flex-wrap:wrap;padding:4px 0}
+.quick span{font-size:12px;padding:6px 10px;border-radius:999px;border:1px solid rgba(255,255,255,.25)}
+.pcomp{position:absolute;left:0;right:0;bottom:0;padding:10px 12px 18px;display:flex;gap:8px;align-items:center;background:#0E0E10;border-top:1px solid rgba(255,255,255,.08)}
+.pcomp .in{flex:1;border-radius:999px;padding:10px 14px;font-size:13px;background:rgba(255,255,255,.08);opacity:.8}
+.note{max-width:300px;font-size:13px;color:var(--ink2);line-height:1.55}
+.note h2{margin-bottom:8px}
+.lockbg{position:absolute;inset:0;background:radial-gradient(120% 80% at 30% 10%,#3A2A12 0%,#0E0E10 60%)}
+.clock{position:relative;text-align:center;margin-top:70px;font-size:64px;font-weight:300;letter-spacing:-2px}
+.notif{position:relative;margin:14px 12px 0;background:rgba(40,40,46,.86);border-radius:18px;padding:11px 12px;display:flex;gap:10px;font-size:13px;line-height:1.35}
+.notif .ic{width:32px;height:32px;border-radius:8px;flex:none;display:grid;place-items:center;font-weight:900;color:#0E0E10}
+/* id */
+.idwrap{min-height:100vh;display:grid;grid-template-columns:1fr 480px}
+.idleft{background:var(--ink);color:#EDEAE4;padding:40px;display:flex;flex-direction:column}
+.idright{padding:56px 48px;display:flex;flex-direction:column;gap:14px}
+.field{display:flex;gap:8px}
+.inp{border:1px solid var(--line2);background:var(--card);border-radius:10px;padding:11px 12px;font:500 13px var(--mono);flex:1;color:var(--ink2)}
+.big{width:100%;justify-content:center;padding:12px;font-size:14px;border-radius:10px}
+.codebox{display:flex;gap:8px}.codebox span{width:46px;height:54px;border:1px solid var(--line2);border-radius:10px;background:#fff;display:grid;place-items:center;font:600 22px var(--mono)}
+/* map */
+.mapgrid{display:grid;grid-template-columns:repeat(4,1fr);gap:14px}
+.mapgrid ul{list-style:none;display:flex;flex-direction:column;gap:6px;margin-top:10px}
+.mapgrid li a{font-size:13.5px;border-bottom:1px solid var(--line);display:block;padding:4px 0}
+.mapgrid li a:hover{color:var(--pink)}
+</style></head><body><div class="app"><nav class="side"><a class="brandrow" href="../index.html"><svg class="blogo" viewBox="-50 -50 100 100" aria-hidden="true"><g stroke="currentColor" stroke-width="10" stroke-linecap="round"><line x1="-30" y1="-30" x2="30" y2="30"/><line x1="30" y1="-30" x2="-30" y2="30"/></g><circle r="12" fill="#F5308C"/></svg><div><div class="brand">SuperX<b>.</b></div><div class="by">Ops</div></div></a><div class="ask">Ask ops anything…<kbd>⌘I</kbd></div><a class="ni" href="index.html">Today</a><a class="ni" href="live.html">Live<span class="c">14</span></a><a class="ni" href="inbox.html">Inbox<span class="c">38</span></a><a class="ni" href="approvals.html">Approvals<span class="c hot">3</span></a><a class="ni" href="reviews.html">Store reviews<span class="c">12</span></a><div class="navh">Games</div><a class="ni" href="inbox.html#pr"><span class="dot" style="background:var(--pr)"></span>Prime Rush<span class="c">29</span></a><a class="ni" href="inbox.html#tc"><span class="dot" style="background:var(--tc)"></span>Tower Conquest<span class="c">3</span></a><a class="ni" href="inbox.html#mg"><span class="dot" style="background:var(--mg)"></span>MaskGun<span class="c">6</span></a><div class="navh">Run the stores</div><a class="ni on" href="store.html">Store ops</a><a class="ni" href="reports.html">Reports<span class="c hot">1</span></a><div class="navh">Concierges</div><a class="ni" href="concierges.html">Characters<span class="c">5</span></a><a class="ni" href="knowledge.html">Knowledge<span class="c hot">4</span></a><div class="navh">Game ops</div><a class="ni" href="#">Cheaters</a><a class="ni" href="#">Weapon meta</a><div class="navfoot">ops.superx.gg<br><b>●</b> OpenPing · 12 checks green</div></nav><main><div class="top"><div><div class="eyebrow">Store ops · MaskGun</div><h1>Run every store from here<b>.</b></h1></div><div class="crumbs">ops.superx.gg › <span>Store ops</span></div></div><div class="acts"><span class="tag"><span class="dot" style="background:var(--pr)"></span>Prime Rush</span><span class="tag"><span class="dot" style="background:var(--tc)"></span>Tower Conquest</span><span class="tag f"><span class="dot" style="background:var(--mg)"></span>MaskGun</span></div><div class="grid g2"><div class="panel"><div class="ph"><h2>Availability<b>.</b></h2><span class="tag">GameGateway</span></div><div class="facts"><div class="fact"><div class="k">Backend</div><div class="v">available</div></div><div class="fact"><div class="k">Android · iOS</div><div class="v">3.049</div></div><div class="fact"><div class="k">WebGL</div><div class="v">3.049</div></div></div><div class="row nod" style="margin-top:10px"><div><div class="nm">Maintenance message</div><div class="act">"The armoury's being restocked — back in 20 minutes."</div></div><span class="toggle off"></span></div></div><div class="panel"><div class="ph"><h2>Failed deliveries<b>.</b></h2><span class="tag o">3 waiting</span><span class="tag">41 today</span></div><div class="rows"><div class="row nod"><div><div class="nm">ghost99 · Starter Pack</div><div class="act">fulfil timeout 20:12</div></div><span class="btn">Re-send</span></div><div class="row nod"><div><div class="nm">neo.k · 500 Diamonds</div><div class="act">fulfil timeout 20:31</div></div><span class="btn">Re-send</span></div><div class="row nod"><div><div class="nm">sasha · Gold Vest Pack</div><div class="act">fulfil timeout 20:47</div></div><span class="btn">Re-send</span></div></div></div><div class="panel"><div class="ph"><h2>Refunds flagged for review<b>.</b></h2><span class="tag">clawback review</span></div><div class="rows"><div class="row nod"><div><div class="nm">ghost99 · refunded after delivery</div><div class="act">Starter Pack · items still in inventory</div></div><span class="acts"><span class="btn">Claw back</span><span class="btn">Keep</span></span></div></div></div><div class="panel"><div class="ph"><h2>Coupons<b>.</b></h2><span class="tag p">support thank-you 10%</span></div><div class="row nod"><div><div class="nm">Budget this week</div><div class="act">412 of 1,000 used</div><div class="bar pk"><i style="width:41%"></i></div></div><span class="st">41%</span></div><div class="row nod" style="margin-top:8px"><div><div class="nm">Offer after 4★+ resolutions</div><div class="act">collection-aware · once per 14 days</div></div><span class="toggle"></span></div></div></div><div class="foot">PROTOTYPE · ILLUSTRATIVE DATA</div></main><aside class="dock"><div class="dockh"><span class="av" style="background:var(--ink);color:#fff">X</span><div class="t">Ask ops<b>.</b></div><div class="chips"><span class="chip on">Chat</span><span class="chip">Slack</span></div></div><div class="thread"><div class="me">Why are MaskGun deliveries failing tonight?<span class="via">chat · 21:12</span></div><div class="z"><div class="route">question → store ops · MaskGun · 3 sources</div><p><b>/web/v1/purchases/fulfil</b> started timing out at 19:38. 41 orders failed delivery; Mysterio re-sent 38 from chat, 3 are waiting for you.</p><p>GameGateway still reports MaskGun available, so players don't see a maintenance message.</p><div class="acts"><a class="btn p" href="store.html">Open failed deliveries</a><a class="btn" href="reports.html">See spike</a></div></div><div class="me">Re-send the 3 and tell the backend team.<span class="via">chat · 21:14</span></div><div class="z"><p>Done — 3 re-sent, all landed. Posted in #maskgun-backend with the timeline.</p><p>I'll watch the fulfil error rate and tell you if it climbs again.</p></div></div><div class="composer"><span class="ph2">Ask, tell, or hand off anything…</span><span class="send">↑</span></div></aside></div></body></html>

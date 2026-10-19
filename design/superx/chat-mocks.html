@@ -1,0 +1,440 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>SuperX Support — mocks (docs/superx)</title>
+<style>
+:root{
+  --ink:#0A0A0A; --paper:#F7F5F1; --pink:#F5308C; --signal:#FF5B2E; --ok:#1F9D55;
+  --rule:rgba(10,10,10,.12); --strong:#1A1A1A; --ink-rule:rgba(247,245,241,.14);
+  --muted:#5E5B55; --muted-ink:#9C998F;
+  --pr:#F7C600; --tc:#7C3AED; --mg:#FFB400;
+  --display:'Geist',system-ui,-apple-system,'Helvetica Neue',Arial,sans-serif;
+  --mono:'JetBrains Mono',ui-monospace,SFMono-Regular,Menlo,monospace;
+}
+*{box-sizing:border-box;margin:0;padding:0}
+body{background:#E7E4DE;color:var(--ink);font-family:var(--display);-webkit-font-smoothing:antialiased;padding:48px 40px 80px}
+.eyebrow{font-family:var(--mono);font-size:11px;letter-spacing:.12em;text-transform:uppercase}
+.head{max-width:1280px;margin:0 auto 24px}
+.head h1{font-size:40px;letter-spacing:-1.2px;font-weight:600}
+.head p{color:var(--muted);margin-top:8px;font-size:15px;max-width:820px;line-height:1.55}
+.dot{display:inline-block;width:.3em;height:.3em;border-radius:50%;background:var(--pink);margin-left:.04em}
+.cap{max-width:1280px;margin:56px auto 14px;display:flex;gap:14px;align-items:baseline;flex-wrap:wrap}
+.cap .n{font-family:var(--mono);font-size:12px;letter-spacing:.12em}
+.cap .t{font-size:18px;font-weight:600}
+.cap .d{font-size:13px;color:var(--muted)}
+.row{max-width:1280px;margin:0 auto;display:flex;gap:28px;align-items:flex-start;flex-wrap:wrap}
+.phone{width:360px;height:760px;background:#0E0E10;border:1px solid var(--strong);border-radius:30px;overflow:hidden;position:relative;flex:none;color:#fff}
+.phone.light{background:var(--paper);color:var(--ink)}
+.status{height:30px;display:flex;justify-content:space-between;padding:9px 20px 0;font-family:var(--mono);font-size:10.5px;opacity:.8}
+.url{margin:4px 14px 0;font-family:var(--mono);font-size:10.5px;padding:6px 10px;border-radius:8px;background:rgba(255,255,255,.08);display:flex;justify-content:space-between}
+.light .url{background:rgba(10,10,10,.06)}
+.lock{font-size:9px;opacity:.7}
+.desk{width:1280px;background:var(--paper);border:1px solid var(--strong);overflow:hidden}
+.ink{background:var(--ink);color:var(--paper)}
+.btn{display:inline-flex;align-items:center;gap:6px;font-size:13px;font-weight:600;padding:9px 14px;border:1px solid currentColor}
+.btn.fill{background:var(--ink);color:var(--paper);border-color:var(--ink)}
+.btn.pink{background:var(--pink);color:#fff;border-color:var(--pink)}
+.chip{font-family:var(--mono);font-size:10.5px;letter-spacing:.06em;text-transform:uppercase;border:1px solid currentColor;padding:3px 7px;white-space:nowrap;opacity:.9}
+
+/* chat */
+.chat-h{display:flex;align-items:center;gap:10px;padding:12px 14px;border-bottom:1px solid rgba(255,255,255,.1)}
+.light .chat-h{border-color:var(--rule)}
+.av{width:34px;height:34px;border-radius:50%;display:grid;place-items:center;font-weight:800;font-size:14px;color:#0E0E10;flex:none}
+.chat-h .nm{font-weight:700;font-size:14px}
+.chat-h .sb{font-size:11px;opacity:.65;display:flex;align-items:center;gap:6px}
+.live{display:inline-block;width:7px;height:7px;border-radius:50%;background:var(--ok)}
+.msgs{padding:12px 12px 6px;display:flex;flex-direction:column;gap:6px;font-size:13.5px;line-height:1.42}
+.b{max-width:82%;padding:8px 11px;border-radius:16px;position:relative}
+.b.me{align-self:flex-end;background:#2B2B30;border-bottom-right-radius:5px}
+.light .b.me{background:var(--ink);color:var(--paper)}
+.b.bot{align-self:flex-start;background:#1C1C21;border-bottom-left-radius:5px}
+.light .b.bot{background:#fff;border:1px solid var(--rule)}
+.b.gap{margin-top:8px}
+.react{position:absolute;bottom:-9px;right:6px;background:#2B2B30;border:2px solid #0E0E10;border-radius:10px;font-size:11px;padding:0 4px;line-height:16px}
+.light .react{background:#fff;border-color:var(--paper)}
+.typing{align-self:flex-start;background:#1C1C21;border-radius:16px;padding:9px 12px;display:flex;gap:4px}
+.typing i{width:6px;height:6px;border-radius:50%;background:#888;display:block}
+.card{align-self:flex-start;width:86%;border-radius:14px;overflow:hidden;background:#17171B;border:1px solid rgba(255,255,255,.1)}
+.light .card{background:#fff;border-color:var(--rule)}
+.card .r1{display:flex;gap:10px;padding:10px;align-items:center}
+.thumb{width:44px;height:44px;border-radius:8px;flex:none;position:relative;background:#26262B}
+.thumb::after{content:"";position:absolute;inset:11px;border-radius:50%}
+.card .ft{display:flex;justify-content:space-between;align-items:center;padding:8px 10px;border-top:1px solid rgba(255,255,255,.08);font-size:11.5px}
+.light .card .ft{border-color:var(--rule)}
+.okt{color:#4ADE80;font-family:var(--mono);font-size:10.5px;letter-spacing:.06em;text-transform:uppercase}
+.steps{display:flex;gap:6px;font-family:var(--mono);font-size:9.5px;letter-spacing:.06em;text-transform:uppercase;padding:0 10px 10px}
+.steps span{flex:1;padding-top:6px;border-top:2px solid #444;opacity:.6}
+.steps span.on{border-color:#4ADE80;opacity:1}
+.quick{display:flex;gap:6px;flex-wrap:wrap;padding:4px 12px}
+.quick span{font-size:12px;padding:6px 10px;border-radius:999px;border:1px solid rgba(255,255,255,.25)}
+.light .quick span{border-color:var(--rule)}
+.compose{position:absolute;left:0;right:0;bottom:0;padding:10px 12px 18px;display:flex;gap:8px;align-items:center;background:inherit;border-top:1px solid rgba(255,255,255,.08)}
+.light .compose{border-color:var(--rule)}
+.compose .in{flex:1;border-radius:999px;padding:10px 14px;font-size:13px;background:rgba(255,255,255,.08);opacity:.8}
+.light .compose .in{background:#fff;border:1px solid var(--rule)}
+.compose .snd{width:36px;height:36px;border-radius:50%;background:var(--pink);display:grid;place-items:center;font-size:15px;color:#fff}
+
+/* game store bits */
+.gnav{display:flex;align-items:center;justify-content:space-between;padding:10px 14px}
+.glogo{font-weight:900;font-style:italic;letter-spacing:.5px}
+
+/* lock screen */
+.lockbg{position:absolute;inset:0;background:radial-gradient(120% 80% at 30% 10%,#3A2A12 0%,#0E0E10 60%)}
+.clock{position:relative;text-align:center;margin-top:70px;font-size:64px;font-weight:300;letter-spacing:-2px}
+.date{position:relative;text-align:center;font-size:14px;opacity:.8}
+.notif{position:relative;margin:14px 12px 0;background:rgba(40,40,46,.86);border-radius:18px;padding:11px 12px;display:flex;gap:10px;font-size:13px;line-height:1.35}
+.notif .ic{width:32px;height:32px;border-radius:8px;flex:none;display:grid;place-items:center;font-weight:900;color:#0E0E10}
+.notif .t{display:flex;justify-content:space-between;font-size:12px;opacity:.8;margin-bottom:2px}
+
+/* desktop */
+.top{display:flex;align-items:center;gap:26px;padding:16px 32px;border-bottom:1px solid var(--rule)}
+.ink .top{border-color:var(--ink-rule)}
+.brand{font-weight:700;font-size:18px;letter-spacing:-.3px;display:flex;align-items:center;gap:8px}
+.mark{width:26px;height:26px;background:var(--ink);color:var(--paper);display:grid;place-items:center;font-weight:900;font-size:14px}
+.ink .mark{background:var(--paper);color:var(--ink)}
+.links{display:flex;gap:20px;font-size:14px;color:var(--muted)}
+.ink .links{color:var(--muted-ink)}
+.links .on{color:inherit;font-weight:600}
+.ink .links .on{color:var(--paper)}
+.acct{margin-left:auto;display:flex;align-items:center;gap:10px;font-size:13px}
+.avt{width:30px;height:30px;border-radius:50%;background:var(--ink);color:var(--paper);display:grid;place-items:center;font-weight:600;font-size:12px}
+.ink .avt{background:var(--paper);color:var(--ink)}
+.h-xl{font-size:56px;letter-spacing:-2px;font-weight:600;line-height:1.02}
+.h-m{font-size:19px;font-weight:600;letter-spacing:-.3px}
+.muted{color:var(--muted)}
+.ink .muted{color:var(--muted-ink)}
+.grid3{display:grid;grid-template-columns:repeat(3,1fr);border-top:1px solid var(--rule)}
+.cell{padding:22px 28px;border-right:1px solid var(--rule)}
+.cell:last-child{border-right:0}
+.list .it{display:grid;grid-template-columns:1fr auto;gap:4px 12px;padding:12px 0;border-bottom:1px solid var(--rule);font-size:14px;align-items:center}
+.ink .list .it{border-color:var(--ink-rule)}
+.sm{font-size:12px}
+.mono{font-family:var(--mono);font-size:11px;letter-spacing:.06em}
+.pill{font-family:var(--mono);font-size:10px;letter-spacing:.08em;text-transform:uppercase;padding:3px 7px;border:1px solid currentColor;white-space:nowrap}
+.pill.fill{background:var(--ink);color:var(--paper);border-color:var(--ink)}
+.ink .pill.fill{background:var(--paper);color:var(--ink);border-color:var(--paper)}
+.pill.warn{color:var(--signal)}
+.pill.ok{color:var(--ok)}
+.bar{height:6px;background:var(--rule);position:relative;margin-top:6px}
+.ink .bar{background:var(--ink-rule)}
+.bar i{position:absolute;left:0;top:0;bottom:0;background:currentColor}
+.gdot{display:inline-block;width:9px;height:9px;border-radius:50%;margin-right:6px;vertical-align:middle}
+.ops{display:grid;grid-template-columns:200px 400px 1fr 300px;min-height:720px}
+.side{border-right:1px solid var(--ink-rule);padding:18px 0;font-size:13.5px}
+.side .g{font-family:var(--mono);font-size:10px;letter-spacing:.14em;text-transform:uppercase;color:var(--muted-ink);padding:16px 18px 6px}
+.side a{display:flex;justify-content:space-between;padding:7px 18px;color:#CFCBC2}
+.side a.on{background:#161616;color:var(--paper);box-shadow:inset 2px 0 0 var(--paper)}
+.q{border-right:1px solid var(--ink-rule)}
+.qi{padding:12px 14px;border-bottom:1px solid var(--ink-rule);font-size:13px;display:grid;grid-template-columns:1fr auto;gap:4px 8px}
+.qi.sel{background:#161616;box-shadow:inset 2px 0 0 var(--paper)}
+.qi .who{font-weight:600;display:flex;align-items:center;gap:6px}
+.qi .ask{grid-column:1/-1;color:#B4B0A7}
+.qi .tags{grid-column:1/-1;display:flex;gap:5px;flex-wrap:wrap}
+.tg{font-family:var(--mono);font-size:9.5px;letter-spacing:.08em;text-transform:uppercase;border:1px solid #3A3A3A;padding:2px 5px;color:#CFCBC2}
+.tg.p1{background:var(--paper);color:var(--ink);border-color:var(--paper)}
+.tg.hot{border-color:var(--signal);color:var(--signal)}
+.conv{border-right:1px solid var(--ink-rule);display:flex;flex-direction:column}
+.conv-h{display:flex;align-items:center;gap:10px;padding:12px 16px;border-bottom:1px solid var(--ink-rule)}
+.take{margin-left:auto;background:var(--paper);color:var(--ink);font-weight:700;font-size:13px;padding:8px 14px}
+.cm{padding:14px 16px;display:flex;flex-direction:column;gap:6px;font-size:13px;line-height:1.42;flex:1}
+.cm .b.me{background:#2B2B30;align-self:flex-start}
+.cm .b.bot{background:#161616;border:1px solid #2A2A2A;align-self:flex-end}
+.cm .meta{font-family:var(--mono);font-size:9.5px;letter-spacing:.06em;color:var(--muted-ink);align-self:flex-end;text-transform:uppercase}
+.pc{padding:16px}
+.pc .sec{margin-top:16px}
+.pc .eyebrow{color:var(--muted-ink);margin-bottom:6px}
+.kv{display:flex;justify-content:space-between;font-size:12.5px;padding:6px 0;border-bottom:1px solid var(--ink-rule)}
+.kv .v{font-family:var(--mono);font-size:11px}
+.sug{border:1px solid var(--paper);padding:10px;font-size:12.5px;margin-top:8px}
+.digest{display:grid;grid-template-columns:1.25fr 1fr;gap:0}
+.dcol{padding:24px 28px;border-right:1px solid var(--ink-rule)}
+.dcol:last-child{border-right:0}
+.ask-row{display:grid;grid-template-columns:24px 1fr 70px 60px;gap:10px;align-items:center;padding:10px 0;border-bottom:1px solid var(--ink-rule);font-size:13.5px}
+.quote{border-left:2px solid var(--paper);padding:2px 0 2px 10px;font-size:13px;margin:10px 0;color:#DDD8CF}
+.ping{display:flex;gap:18px;padding:12px 28px;border-top:1px solid var(--ink-rule);font-family:var(--mono);font-size:11px;letter-spacing:.06em;color:#CFCBC2;flex-wrap:wrap}
+.ping b{color:#4ADE80;font-weight:500}
+.so{display:grid;grid-template-columns:repeat(2,1fr)}
+.so .box{padding:22px 28px;border-right:1px solid var(--rule);border-bottom:1px solid var(--rule)}
+.so .box:nth-child(2n){border-right:0}
+.toggle{width:34px;height:18px;border-radius:9px;background:var(--ink);position:relative;display:inline-block;vertical-align:middle}
+.toggle::after{content:"";position:absolute;right:2px;top:2px;width:14px;height:14px;border-radius:50%;background:var(--paper)}
+.toggle.off{background:#C9C5BC}
+.toggle.off::after{left:2px;right:auto}
+</style>
+</head>
+<body>
+
+<header class="head">
+  <div class="eyebrow">docs/superx · mocks · 18 Oct 2026</div>
+  <h1 style="margin-top:10px">SuperX Support<span class="dot"></span></h1>
+  <p>One sign-in for every game, a concierge you chat with from inside the game or any store, and ops.superx.gg for the team. Concierge style follows the Instinct pattern: react, acknowledge, deliver, come back. Data shown is illustrative.</p>
+</header>
+
+<!-- 1 -->
+<div class="cap"><span class="n">01</span><span class="t">From the game → maskgun.superx.gg/support, already signed in</span><span class="d">Launch code exchanged on open. Persona "Mysterio" (a MaskGun mask). React · acknowledge · act · come back.</span></div>
+<div class="row">
+  <div class="phone">
+    <div class="status"><span>21:04</span><span>MaskGun</span></div>
+    <div class="url"><span>maskgun.superx.gg/support</span><span class="lock">🔒 signed in · game</span></div>
+    <div class="chat-h"><span class="av" style="background:var(--mg)">M</span><div><div class="nm">Mysterio · MaskGun support</div><div class="sb"><span class="live"></span>replies in seconds · knows your account</div></div></div>
+    <div class="msgs">
+      <div class="b bot">Hey Viper_22 🎭 What's up?</div>
+      <div class="b me gap">bought the gold vest pack 20 min ago, nothing in my inventory<span class="react">👀</span></div>
+      <div class="b bot gap">Got it — checking that order now.</div>
+      <div class="card">
+        <div class="r1"><div class="thumb" style="--c:#FFB400"></div><div style="font-size:13px"><b>Gold Vest Pack</b><br><span style="opacity:.6;font-size:11.5px">SuperX store · today 20:43</span></div></div>
+        <div class="steps"><span class="on">Paid</span><span class="on">Re-sent</span><span>In game</span></div>
+        <div class="ft"><span style="opacity:.7">Delivery had failed — re-sent just now</span><span class="okt">Done</span></div>
+      </div>
+      <div class="b bot">Done — the payment went through, the delivery didn't. I've re-sent it.</div>
+      <div class="b bot">Restart MaskGun and it'll be in Inventory → Vests. I'll ping you the moment it lands.</div>
+      <div class="b me gap">legend thanks<span class="react">🙏</span></div>
+    </div>
+    <div class="compose"><span class="in">Message Mysterio</span><span class="snd">↑</span></div>
+  </div>
+
+  <div class="phone">
+    <div class="lockbg"></div>
+    <div class="status" style="position:relative"><span>21:06</span><span></span></div>
+    <div class="clock">21:06</div>
+    <div class="date">Saturday 18 October</div>
+    <div class="notif"><div class="ic" style="background:var(--mg)">M</div><div><div class="t"><span>MaskGun</span><span>now</span></div><b>Your Gold Vest Pack is in ✅</b><br>Inventory → Vests. Tap to rate how Mysterio did.</div></div>
+    <div class="notif"><div class="ic" style="background:#fff">✉</div><div><div class="t"><span>MaskGun · in-game mail</span><span>now</span></div><b>Delivery fixed</b><br>We re-sent your Gold Vest Pack. Sorry for the wait.</div></div>
+    <div style="position:absolute;bottom:26px;left:0;right:0;text-align:center;font-size:12px;opacity:.6">One notification per fix · push, then in-game mail, then email</div>
+  </div>
+
+  <div class="phone">
+    <div class="status"><span>21:07</span><span>MaskGun</span></div>
+    <div class="url"><span>maskgun.superx.gg/support?c=MG-4KD2A</span><span class="lock">🔒</span></div>
+    <div class="chat-h"><span class="av" style="background:var(--mg)">M</span><div><div class="nm">Mysterio</div><div class="sb">resolved · 3 min</div></div></div>
+    <div class="msgs">
+      <div class="b bot">It's in ✅ Found it in your inventory just now.</div>
+      <div class="b bot">How did I do?</div>
+      <div style="display:flex;gap:6px;padding:4px 0 0">
+        <span class="chip" style="opacity:.5">1</span><span class="chip" style="opacity:.5">2</span><span class="chip" style="opacity:.5">3</span><span class="chip" style="opacity:.5">4</span><span class="chip" style="background:#fff;color:#0E0E10">5 ★</span>
+      </div>
+      <div class="b bot gap">Thanks 🎭 Since you're running vests — the Midnight set finishes your collection, and there's a support thank-you on it this week.</div>
+      <div class="card"><div class="r1"><div class="thumb"></div><div style="font-size:13px"><b>Midnight Vest</b> · 3 of 4 owned<br><span style="opacity:.6;font-size:11.5px">thank-you coupon applied</span></div></div><div class="ft"><span></span><span class="btn pink" style="padding:6px 10px;font-size:12px">See in store</span></div></div>
+    </div>
+    <div class="compose"><span class="in">Message Mysterio</span><span class="snd">↑</span></div>
+  </div>
+</div>
+
+<!-- 2 -->
+<div class="cap"><span class="n">02</span><span class="t">Five personalities, one set of rules</span><span class="d">Same question — "my reward didn't arrive" — in each game's voice and language.</span></div>
+<div class="row">
+  <div class="phone">
+    <div class="status"><span>9:41</span><span>Prime Rush · LATAM</span></div>
+    <div class="chat-h"><span class="av" style="background:var(--pr)">J</span><div><div class="nm">Juliana · Prime Rush</div><div class="sb"><span class="live"></span>pt-BR</div></div></div>
+    <div class="msgs">
+      <div class="b me">minha recompensa do passe não chegou<span class="react">👀</span></div>
+      <div class="b bot gap">Já tô vendo — um seg ⚡</div>
+      <div class="b bot">Achei: o Charme Kitsune do nível 40 ficou travado do nosso lado. Mandei agora pra sua caixa de correio do jogo.</div>
+      <div class="b bot">Abre o jogo e resgata lá. Qualquer coisa, me chama 🔥</div>
+    </div>
+  </div>
+  <div class="phone">
+    <div class="status"><span>9:41</span><span>Tower Conquest</span></div>
+    <div class="chat-h"><span class="av" style="background:var(--tc);color:#fff">K</span><div><div class="nm">Kingsmen Captain · Tower Conquest</div><div class="sb"><span class="live"></span>en</div></div></div>
+    <div class="msgs">
+      <div class="b me">my season reward didn't arrive<span class="react">👀</span></div>
+      <div class="b bot gap">On it — checking your season chest 🏰</div>
+      <div class="b bot">Found it: the Season 9 chest is waiting in your mailbox, it just wasn't claimed yet.</div>
+      <div class="b bot">Open Mail → Rewards and tap Claim. Your towers will thank you ✨</div>
+    </div>
+  </div>
+  <div class="phone">
+    <div class="status"><span>9:41</span><span>MaskGun</span></div>
+    <div class="chat-h"><span class="av" style="background:var(--mg)">M</span><div><div class="nm">Mysterio · MaskGun</div><div class="sb"><span class="live"></span>en</div></div></div>
+    <div class="msgs">
+      <div class="b me">reward didnt arrive<span class="react">👀</span></div>
+      <div class="b bot gap">Checking.</div>
+      <div class="b bot">Found it — the daily drop was on your other account (VIPER_22). This one's ViperAlt.</div>
+      <div class="b bot">Want me to link them so it lands wherever you play? 🎯</div>
+      <div class="quick" style="padding:4px 0"><span>Link accounts</span><span>No, it's fine</span></div>
+    </div>
+  </div>
+</div>
+
+<!-- 3 -->
+<div class="cap"><span class="n">03</span><span class="t">The concierge button, on every store page</span><span class="d">Prominent and always there. Context from the page opens the right conversation.</span></div>
+<div class="row">
+<div class="desk" style="position:relative;background:#FBFAFF">
+  <div class="top" style="background:#fff"><span class="glogo" style="color:var(--tc);font-size:20px">TOWER CONQUEST</span><div class="links"><a>Home</a><a class="on">Store</a><a>Play</a><a>Support</a></div><div class="acct"><span class="chip" style="color:var(--muted)">SuperX ID · Ana_TC</span><span class="avt">K</span></div></div>
+  <div style="display:grid;grid-template-columns:repeat(4,1fr);gap:16px;padding:28px 32px 120px">
+    <div style="height:220px;border-radius:18px;background:#EDE7FF"></div><div style="height:220px;border-radius:18px;background:#EDE7FF"></div><div style="height:220px;border-radius:18px;background:#EDE7FF"></div><div style="height:220px;border-radius:18px;background:#EDE7FF"></div>
+    <div style="grid-column:1/-1;border:1px solid #F5C2C7;background:#FFF5F6;border-radius:12px;padding:12px 16px;font-size:14px"><b>Payment didn't go through.</b> You weren't charged.</div>
+  </div>
+  <div style="position:absolute;right:32px;bottom:100px;background:#fff;border:1px solid var(--rule);border-radius:16px;padding:12px 14px;width:290px;font-size:13.5px;box-shadow:0 10px 30px rgba(0,0,0,.08)"><b>Kingsmen Captain</b> · That payment didn't go through — want me to check what happened?<div style="display:flex;gap:6px;margin-top:10px"><span class="chip">Yes, check</span><span class="chip">Not now</span></div></div>
+  <div style="position:absolute;right:32px;bottom:28px;display:flex;align-items:center;gap:10px;background:var(--ink);color:var(--paper);border-radius:999px;padding:12px 18px 12px 12px;font-weight:600;font-size:15px"><span class="av" style="background:var(--tc);color:#fff;width:32px;height:32px">K</span>Ask the Captain <span class="live"></span></div>
+</div>
+</div>
+
+<!-- 4 -->
+<div class="cap"><span class="n">04</span><span class="t">support.superx.gg — every game, one account</span><span class="d">SuperX ID signed in. Issues have a status line; every purchase has "Problem with this order?".</span></div>
+<div class="row">
+<div class="desk">
+  <div class="top"><span class="brand"><span class="mark">X</span>SuperX Support<span class="dot"></span></span><div class="links"><a class="on">Home</a><a>Conversations</a><a>Purchases</a><a>Help articles</a></div><div class="acct"><span>QuenteCapitão4497</span><span class="avt">Q</span></div></div>
+  <div style="display:grid;grid-template-columns:1.3fr 1fr;gap:40px;padding:44px 32px 34px">
+    <div>
+      <div class="eyebrow muted">Hi QuenteCapitão4497</div>
+      <div class="h-xl" style="margin-top:12px">How can we help<span class="dot"></span></div>
+      <div style="margin-top:22px;display:flex;border:1px solid var(--ink);background:#fff"><span style="flex:1;padding:15px 16px;color:var(--muted)">Ask anything about your games…</span><span class="btn fill" style="margin:6px">Chat now</span></div>
+      <div style="display:flex;gap:8px;margin-top:14px;flex-wrap:wrap"><span class="chip">Item not received</span><span class="chip">Link a game</span><span class="chip">Ban appeal</span><span class="chip">Game won't load</span></div>
+    </div>
+    <div>
+      <div class="eyebrow muted">Your games</div>
+      <div class="list" style="margin-top:8px">
+        <div class="it"><span><span class="gdot" style="background:var(--pr)"></span>Prime Rush · LATAM</span><span class="mono">EDFXPT5G</span></div>
+        <div class="it"><span><span class="gdot" style="background:var(--mg)"></span>MaskGun</span><span class="mono">viper_22</span></div>
+        <div class="it"><span class="muted"><span class="gdot" style="background:var(--tc)"></span>Tower Conquest</span><span class="mono">Link →</span></div>
+      </div>
+    </div>
+  </div>
+  <div class="grid3">
+    <div class="cell">
+      <div class="h-m">Open issues</div>
+      <div class="list" style="margin-top:10px">
+        <div class="it"><span>Season reward missing<br><span class="sm muted">Prime Rush · Juliana is on it</span></span><span class="pill fill">Looking into it</span></div>
+        <div class="it"><span>Can't link Google<br><span class="sm muted">MaskGun · waiting for you</span></span><span class="pill">Your reply</span></div>
+      </div>
+    </div>
+    <div class="cell">
+      <div class="h-m">Recent purchases</div>
+      <div class="list" style="margin-top:10px">
+        <div class="it"><span>Gold Vest Pack · MaskGun<br><span class="sm muted">SuperX store · today</span></span><span class="pill ok">Delivered</span></div>
+        <div class="it"><span>Prime Pass S4 · Prime Rush<br><span class="sm muted">Google Play · 2 Oct</span></span><span class="pill ok">Delivered</span></div>
+      </div>
+      <div class="sm" style="margin-top:10px"><u>Problem with an order?</u></div>
+    </div>
+    <div class="cell">
+      <div class="h-m">Resolved</div>
+      <div class="list" style="margin-top:10px">
+        <div class="it"><span>Gold Vest Pack not delivered<br><span class="sm muted">fixed in 3 min · rated ★★★★★</span></span><span class="pill">Resolved</span></div>
+        <div class="it"><span>Missing Kitsune charm<br><span class="sm muted">fixed in 1 day</span></span><span class="pill">Resolved</span></div>
+      </div>
+    </div>
+  </div>
+</div>
+</div>
+
+<!-- 5 -->
+<div class="cap"><span class="n">05</span><span class="t">ops.superx.gg — live</span><span class="d">Every live chat, what each player wants right now, watch or take over. Suggested action with one button.</span></div>
+<div class="row">
+<div class="desk ink">
+  <div class="top"><span class="brand"><span class="mark">X</span>SuperX Ops</span><div class="links"><a class="on">Live</a><a>Inbox</a><a>Store ops</a><a>Reports</a><a>Knowledge</a></div><div class="acct"><span class="chip">All games</span><span>ana@supergaming.com</span><span class="avt">A</span></div></div>
+  <div class="ops">
+    <nav class="side">
+      <div class="g">Support</div><a class="on">Live <span class="mono">14</span></a><a>Inbox <span class="mono">38</span></a><a>Approvals <span class="mono">3</span></a><a>Store reviews <span class="mono">12</span></a>
+      <div class="g">Games</div><a><span><span class="gdot" style="background:var(--pr)"></span>Prime Rush</span><span class="mono">9</span></a><a><span><span class="gdot" style="background:var(--mg)"></span>MaskGun</span><span class="mono">4</span></a><a><span><span class="gdot" style="background:var(--tc)"></span>Tower Conquest</span><span class="mono">1</span></a>
+      <div class="g">Game ops</div><a>Cheaters</a><a>Weapon meta</a><a>Diagnostics</a>
+    </nav>
+    <section class="q">
+      <div class="qi sel"><span class="who"><span class="live"></span>Viper_22</span><span class="mono" style="color:var(--muted-ink)">MG</span><span class="ask">Item not delivered · Gold Vest Pack</span><span class="tags"><span class="tg">Mysterio handling</span><span class="tg p1">P1 · payer</span><span class="tg">Proven</span></span></div>
+      <div class="qi"><span class="who"><span class="live"></span>rafa_br</span><span class="mono" style="color:var(--muted-ink)">PR</span><span class="ask">Ban appeal · angry</span><span class="tags"><span class="tg hot">Handed off</span><span class="tg">pt-BR</span></span></div>
+      <div class="qi"><span class="who"><span class="live"></span>Ana_TC</span><span class="mono" style="color:var(--muted-ink)">TC</span><span class="ask">Payment failed at checkout</span><span class="tags"><span class="tg">Kingsmen Captain handling</span></span></div>
+      <div class="qi"><span class="who"><span class="live"></span>lucas.mx</span><span class="mono" style="color:var(--muted-ink)">PR</span><span class="ask">How to join a team</span><span class="tags"><span class="tg">Juliana handling</span><span class="tg">es</span></span></div>
+      <div class="qi"><span class="who" style="color:var(--muted-ink)">ghost99</span><span class="mono" style="color:var(--muted-ink)">MG</span><span class="ask">Refund request · Starter pack</span><span class="tags"><span class="tg">Needs approval</span></span></div>
+    </section>
+    <section class="conv">
+      <div class="conv-h"><span class="live"></span><div><div style="font-weight:600">Viper_22 · MaskGun</div><div class="mono" style="color:var(--muted-ink)">from the game · maskgun.superx.gg/support · 2m</div></div><span class="take">Take over</span></div>
+      <div class="cm">
+        <div class="b me">bought the gold vest pack 20 min ago, nothing in my inventory</div>
+        <div class="b bot">Got it — checking that order now.</div>
+        <div class="meta">tool · orders.get → paid, delivery failed</div>
+        <div class="meta">tool · orders.redeliver → ok · audit #8812</div>
+        <div class="b bot">Done — the payment went through, the delivery didn't. I've re-sent it.</div>
+        <div class="b me">legend thanks</div>
+      </div>
+    </section>
+    <aside class="pc">
+      <div class="eyebrow">SuperX account</div>
+      <div style="font-weight:600">Viper_22</div>
+      <div class="kv"><span>MaskGun</span><span class="v">viper_22 · proven (game)</span></div>
+      <div class="kv"><span>Prime Rush</span><span class="v">EDFXPT5G</span></div>
+      <div class="kv"><span>Supporter</span><span class="v">high · active</span></div>
+      <div class="sec"><div class="eyebrow">Order</div>
+        <div class="kv"><span>Gold Vest Pack</span><span class="v">SuperX store (Xsolla) · $4.99</span></div>
+        <div class="kv"><span>Delivery</span><span class="v">failed → re-sent</span></div></div>
+      <div class="sec"><div class="eyebrow">Next step</div>
+        <div class="sug">Re-delivery succeeded. Close as resolved when rated; push queued.</div></div>
+    </aside>
+  </div>
+</div>
+</div>
+
+<!-- 6 -->
+<div class="cap"><span class="n">06</span><span class="t">ops.superx.gg — reports: what players want</span><span class="d">Daily digest per game from the intent records; spike alerts; OpenPing watching support.</span></div>
+<div class="row">
+<div class="desk ink">
+  <div class="top"><span class="brand"><span class="mark">X</span>SuperX Ops</span><div class="links"><a>Live</a><a>Inbox</a><a>Store ops</a><a class="on">Reports</a><a>Knowledge</a></div><div class="acct"><span class="chip">MaskGun</span><span class="chip">Today</span></div></div>
+  <div style="padding:18px 28px;border-bottom:1px solid var(--ink-rule);display:flex;gap:14px;align-items:center"><span class="pill warn">Spike</span><span style="font-size:14px"><b>"Item not delivered" is at 3.4× its usual rate on MaskGun since 19:40.</b> <span class="muted">41 chats · 38 resolved by re-delivery · likely a fulfilment backend issue</span></span><span class="btn" style="margin-left:auto;color:var(--paper)">Open in store ops</span></div>
+  <div class="digest">
+    <div class="dcol">
+      <div class="eyebrow muted">Daily digest · MaskGun · 18 Oct</div>
+      <div class="h-m" style="margin-top:8px">What players asked for</div>
+      <div class="ask-row"><span class="mono">1</span><span>Item not delivered after purchase</span><span class="mono">212</span><span class="pill warn">▲ 3.4×</span></div>
+      <div class="ask-row"><span class="mono">2</span><span>Link Google / move to new phone</span><span class="mono">96</span><span class="mono">—</span></div>
+      <div class="ask-row"><span class="mono">3</span><span>Ban appeal</span><span class="mono">41</span><span class="mono">▼</span></div>
+      <div class="ask-row"><span class="mono">4</span><span>Coupon didn't apply</span><span class="mono">33</span><span class="pill">new</span></div>
+      <div class="ask-row"><span class="mono">5</span><span>When is the next season</span><span class="mono">29</span><span class="mono">—</span></div>
+      <div class="quote">"paid twice and got nothing, fix this pls"</div>
+      <div class="quote">"coupon says invalid on the vest pack"</div>
+    </div>
+    <div class="dcol">
+      <div class="h-m">How support did</div>
+      <div class="list" style="margin-top:8px">
+        <div class="it"><span>Resolved without a human</span><span class="mono">84%</span></div>
+        <div class="it"><span>First reply</span><span class="mono">1.4 s</span></div>
+        <div class="it"><span>Median time to fix</span><span class="mono">3 min</span></div>
+        <div class="it"><span>Rating</span><span class="mono">4.6 ★</span></div>
+        <div class="it"><span>Taken over by staff</span><span class="mono">6%</span></div>
+        <div class="it"><span>Cost per conversation</span><span class="mono">$0.004</span></div>
+      </div>
+      <div class="h-m" style="margin-top:18px">Couldn't answer</div>
+      <div class="sm muted" style="margin-top:6px">"Coupon didn't apply" has no help article → draft one</div>
+    </div>
+  </div>
+  <div class="ping"><span>OpenPing</span><span><b>●</b> support.superx.gg 312 ms</span><span><b>●</b> widget.js</span><span><b>●</b> engine</span><span><b>●</b> GameGateway</span><span><b>●</b> agent test · MaskGun passed 21:00</span><span><b>●</b> push + inbox test</span></div>
+</div>
+</div>
+
+<!-- 7 -->
+<div class="cap"><span class="n">07</span><span class="t">ops.superx.gg — store ops, per game</span><span class="d">Same APIs the stores use, configured once here.</span></div>
+<div class="row">
+<div class="desk">
+  <div class="top"><span class="brand"><span class="mark">X</span>SuperX Ops</span><div class="links"><a>Live</a><a>Inbox</a><a class="on">Store ops</a><a>Reports</a></div><div class="acct"><span class="chip"><span class="gdot" style="background:var(--mg)"></span>MaskGun</span><span class="avt">A</span></div></div>
+  <div class="so">
+    <div class="box"><div class="eyebrow muted">Availability · GameGateway</div><div class="h-m" style="margin-top:8px">Game backend: available</div><div class="sm muted" style="margin-top:6px">Android 3.049 · iOS 3.049 · WebGL</div><div style="margin-top:14px;display:flex;gap:10px;align-items:center;font-size:13px"><span class="toggle off"></span>Maintenance message <span class="btn" style="margin-left:auto">Edit message</span></div></div>
+    <div class="box"><div class="eyebrow muted">Failed deliveries</div><div class="h-m" style="margin-top:8px">7 waiting · 41 re-sent today</div><div class="list" style="margin-top:8px"><div class="it"><span>ghost99 · Starter Pack</span><span class="btn" style="padding:5px 10px">Re-send</span></div><div class="it"><span>neo.k · 500 Diamonds</span><span class="btn" style="padding:5px 10px">Re-send</span></div></div></div>
+    <div class="box"><div class="eyebrow muted">Refunds flagged for review</div><div class="h-m" style="margin-top:8px">3 to decide</div><div class="list" style="margin-top:8px"><div class="it"><span>ghost99 · refunded after delivery</span><span style="display:flex;gap:6px"><span class="btn" style="padding:5px 10px">Claw back</span><span class="btn" style="padding:5px 10px">Keep</span></span></div></div></div>
+    <div class="box"><div class="eyebrow muted">Coupons</div><div class="h-m" style="margin-top:8px">Support thank-you: 10%</div><div style="margin-top:10px;font-size:13px">Budget this week · 412 of 1,000 used<div class="bar" style="color:var(--pink)"><i style="width:41%"></i></div></div><div style="margin-top:12px;display:flex;gap:10px;align-items:center;font-size:13px"><span class="toggle"></span>Offer after 4★+ resolutions</div></div>
+  </div>
+</div>
+</div>
+
+<!-- 8 -->
+<div class="cap"><span class="n">08</span><span class="t">SuperX ID — signing in outside the game</span><span class="d">From the game it's automatic. On the web: SID + in-game code, Google or Apple.</span></div>
+<div class="row">
+  <div class="phone light">
+    <div class="status"><span>9:41</span><span></span></div>
+    <div class="url"><span>id.superx.gg</span><span class="lock">🔒</span></div>
+    <div style="padding:34px 22px">
+      <div class="brand"><span class="mark">X</span>SuperX</div>
+      <div style="font-size:30px;font-weight:600;letter-spacing:-1px;margin-top:26px;line-height:1.1">One sign-in for all your games<span class="dot"></span></div>
+      <div class="muted" style="font-size:14px;margin-top:10px">Prime Rush, Tower Conquest and MaskGun.</div>
+      <div style="margin-top:26px;font-size:13px;font-weight:600">Player ID</div>
+      <div style="margin-top:6px;display:flex;gap:8px"><span style="padding:10px 12px;border:1px solid var(--ink);background:#fff;font-family:var(--mono);font-size:13px">MaskGun ▾</span><span style="flex:1;padding:10px 12px;border:1px solid var(--ink);background:#fff;font-family:var(--mono);font-size:13px">viper_22</span></div>
+      <div class="btn fill" style="margin-top:12px;width:100%;justify-content:center;padding:12px">Send code to my in-game mail</div>
+      <div style="text-align:center;margin:18px 0;font-size:12px" class="muted">or</div>
+      <div class="btn" style="width:100%;justify-content:center;padding:12px">Continue with Google</div>
+      <div class="btn" style="width:100%;justify-content:center;padding:12px;margin-top:8px">Continue with Apple</div>
+      <div class="sm muted" style="margin-top:22px;line-height:1.5">Playing from the game? Tap Support in the game and you're signed in automatically.</div>
+    </div>
+  </div>
+</div>
+
+</body>
+</html>

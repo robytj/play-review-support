@@ -12,6 +12,9 @@ missing so that every game's players and operators work in one place:
 | **support.superx.gg** | players | A concierge chat that knows the player and can get things done, in every store and from the game |
 | **ops.superx.gg** | staff | The other side: every ticket and live chat, every game's store operations, and reports on what players want |
 
+**Building this? Start with `HANDOVER.md`**: the build spec, repos, infrastructure, tickets
+and go-live checklist in one place. Prototype: `design/superx/prototype/index.html`.
+
 ## The documents
 
 | Doc | Covers |
