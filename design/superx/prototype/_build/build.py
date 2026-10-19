@@ -175,7 +175,7 @@ aside.dock{background:var(--card);border-left:1px solid var(--line);display:flex
 .big{width:100%;justify-content:center;padding:12px;font-size:14px;border-radius:10px}
 .codebox{display:flex;gap:8px}.codebox span{width:46px;height:54px;border:1px solid var(--line2);border-radius:10px;background:#fff;display:grid;place-items:center;font:600 22px var(--mono)}
 /* map */
-.mapgrid{display:grid;grid-template-columns:repeat(4,1fr);gap:14px}
+.mapgrid{display:grid;grid-template-columns:repeat(5,1fr);gap:14px}
 .mapgrid ul{list-style:none;display:flex;flex-direction:column;gap:6px;margin-top:10px}
 .mapgrid li a{font-size:13.5px;border-bottom:1px solid var(--line);display:block;padding:4px 0}
 .mapgrid li a:hover{color:var(--pink)}
@@ -698,6 +698,7 @@ def play_personas():
 # ================================================================ map
 def index():
     groups = [
+        ("Start here", [("Team deck (17 slides)", "deck.html"), ("Handover spec (GitHub)", "https://github.com/robytj/play-review-support/blob/master/docs/superx/HANDOVER.md")]),
         ("Player · in the game & stores", [("MaskGun: tap Support in game", "play/maskgun-support.html"), ("Tower Conquest store + concierge button", "play/towerconquest-store.html"), ("Three characters, three worlds", "play/characters.html")]),
         ("support.superx.gg", [("Home", "support/index.html"), ("Conversations", "support/conversations.html"), ("A conversation", "support/conversation.html"), ("Purchases", "support/purchases.html"), ("Help centre", "support/help.html"), ("Help article", "support/article.html")]),
         ("id.superx.gg", [("Sign in", "id/signin.html"), ("In-game code", "id/code.html"), ("Account + linked games", "id/account.html")]),

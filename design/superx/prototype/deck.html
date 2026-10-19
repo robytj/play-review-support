@@ -1,0 +1,383 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>SuperX Support — the team deck</title>
+<style>
+:root{
+  --ink:#0A0A0A; --ink2:#4A4845; --ink3:#868079;
+  --paper:#F7F5F1; --paper2:#EFEDE7; --card:#FFFFFF;
+  --line:#E3E0DA; --line2:#D2CFC9;
+  --pink:#F5308C; --signal:#FF5B2E; --green:#00C267;
+  --pr:#F7C600; --tc:#7C3AED; --mg:#FFB400;
+  --mono:'JetBrains Mono',ui-monospace,SFMono-Regular,Menlo,monospace;
+}
+*{box-sizing:border-box;margin:0;padding:0}
+html,body{height:100%;background:#1A1918;overflow:hidden;font-family:Geist,system-ui,-apple-system,'Helvetica Neue',Arial,sans-serif;-webkit-font-smoothing:antialiased;color:var(--ink)}
+#stage{position:absolute;left:50%;top:50%;width:1600px;height:900px;transform-origin:center center}
+.slide{position:absolute;inset:0;background:var(--paper);display:none;padding:64px 80px 56px;overflow:hidden}
+.slide.on{display:flex;flex-direction:column}
+.slide.ink{background:var(--ink);color:#EDEAE4}
+.eyebrow{font:500 15px var(--mono);letter-spacing:.12em;text-transform:uppercase;color:var(--ink3)}
+.ink .eyebrow{color:#8E8A84}
+h1{font-size:76px;line-height:1.02;letter-spacing:-.035em;font-weight:700}
+h2{font-size:52px;line-height:1.05;letter-spacing:-.03em;font-weight:700;margin-top:10px}
+h1 b,h2 b,.t b{color:var(--pink)}
+.lede{font-size:24px;line-height:1.45;color:var(--ink2);margin-top:18px;max-width:1100px}
+.ink .lede{color:#B9B4AC}
+.mono{font-family:var(--mono)}
+.foot{position:absolute;left:80px;right:80px;bottom:24px;display:flex;justify-content:space-between;font:500 12px var(--mono);letter-spacing:.08em;color:var(--ink3);text-transform:uppercase}
+.ink .foot{color:#6F6B65}
+.logo{display:flex;align-items:center;gap:12px;font-weight:700;font-size:28px;letter-spacing:-.02em}
+.logo svg{width:40px;height:40px}
+.cards{display:grid;gap:18px;margin-top:34px}
+.c3{grid-template-columns:repeat(3,1fr)}.c2{grid-template-columns:1fr 1fr}.c4{grid-template-columns:repeat(4,1fr)}.c5{grid-template-columns:repeat(5,1fr)}
+.card{background:var(--card);border:1px solid var(--line);border-radius:16px;padding:24px 26px}
+.ink .card{background:#151413;border-color:#2A2826}
+.card .k{font:500 13px var(--mono);letter-spacing:.1em;text-transform:uppercase;color:var(--ink3);display:flex;align-items:center;gap:8px}
+.card .t{font-size:30px;font-weight:700;letter-spacing:-.02em;margin-top:8px}
+.card .s{font-size:19px;line-height:1.45;color:var(--ink2);margin-top:8px}
+.ink .card .s{color:#B9B4AC}
+.dot{width:12px;height:12px;border-radius:50%;display:inline-block;flex:none}
+.split{display:grid;grid-template-columns:420px 1fr;gap:44px;flex:1;min-height:0;margin-top:8px}
+.side h2{font-size:44px}
+.points{margin-top:22px;display:flex;flex-direction:column;gap:14px}
+.points div{font-size:20px;line-height:1.45;color:var(--ink2);padding-left:22px;position:relative}
+.points div:before{content:"";position:absolute;left:0;top:11px;width:9px;height:9px;border-radius:50%;background:var(--pink)}
+.points b{color:var(--ink)}
+.screen{position:relative;border:1px solid var(--line2);border-radius:16px;overflow:hidden;background:#fff;box-shadow:0 18px 50px rgba(10,10,10,.10)}
+.screen .bar{height:34px;background:var(--paper2);border-bottom:1px solid var(--line);display:flex;align-items:center;gap:7px;padding:0 14px;font:500 12px var(--mono);color:var(--ink3)}
+.screen .bar i{width:10px;height:10px;border-radius:50%;background:var(--line2);display:block}
+.screen .bar span{margin-left:10px}
+.screen .vp{position:relative;overflow:hidden}
+.screen iframe{border:0;position:absolute;left:0;top:0;transform-origin:0 0;background:var(--paper)}
+.screen a.open{position:absolute;right:12px;top:6px;font:500 12px var(--mono);color:var(--ink2);text-decoration:none}
+.flow{display:flex;align-items:stretch;gap:14px;margin-top:34px}
+.flow .step{flex:1;background:var(--card);border:1px solid var(--line);border-radius:16px;padding:22px}
+.flow .n{font:600 14px var(--mono);color:var(--pink)}
+.flow .t{font-size:24px;font-weight:700;margin-top:6px;letter-spacing:-.01em}
+.flow .s{font-size:17px;color:var(--ink2);margin-top:6px;line-height:1.4}
+.flow .arrow{align-self:center;font-size:28px;color:var(--ink3)}
+.arch{display:grid;grid-template-columns:1fr 1fr 1fr;gap:16px;margin-top:30px}
+.box{border:1px solid var(--line2);border-radius:14px;padding:16px 18px;background:var(--card)}
+.box .t{font-size:22px;font-weight:700}
+.box .s{font-size:16px;color:var(--ink2);margin-top:4px;line-height:1.4}
+.box.ink{background:var(--ink);color:#EDEAE4;border-color:var(--ink)}
+.box.ink .s{color:#B9B4AC}
+.tbl{width:100%;border-collapse:collapse;margin-top:26px;font-size:19px}
+.tbl td,.tbl th{padding:13px 14px;border-bottom:1px solid var(--line);text-align:left;vertical-align:top}
+.tbl th{font:500 13px var(--mono);letter-spacing:.1em;text-transform:uppercase;color:var(--ink3)}
+.tag{font:500 13px var(--mono);border:1px solid var(--line2);border-radius:999px;padding:3px 10px;white-space:nowrap;color:var(--ink2)}
+.tag.o{border-color:var(--signal);color:var(--signal)}
+.tag.p{border-color:var(--pink);color:var(--pink)}
+.big{font-size:120px;font-weight:700;letter-spacing:-.04em;line-height:1}
+.quote{font-size:30px;line-height:1.35;letter-spacing:-.01em;border-left:4px solid var(--pink);padding-left:22px;margin-top:22px}
+#hud{position:fixed;right:18px;bottom:14px;font:500 12px var(--mono);color:#8E8A84;letter-spacing:.06em;z-index:5}
+#hud a{color:#B9B4AC;margin-left:12px;text-decoration:none}
+#prog{position:fixed;left:0;bottom:0;height:3px;background:var(--pink);z-index:5;transition:width .2s}
+@media print{html,body{overflow:visible;background:#fff}#stage{position:static;transform:none!important}.slide{display:flex!important;position:relative;page-break-after:always;width:1600px;height:900px}#hud,#prog{display:none}}
+</style>
+</head>
+<body>
+<div id="stage">
+
+<!-- 1 -->
+<section class="slide ink">
+  <div class="logo"><svg viewBox="-50 -50 100 100"><g stroke="#EDEAE4" stroke-width="10" stroke-linecap="round"><line x1="-30" y1="-30" x2="30" y2="30"/><line x1="30" y1="-30" x2="-30" y2="30"/></g><circle r="12" fill="#F5308C"/></svg><span>SuperX<b style="color:var(--pink)">.</b></span></div>
+  <div style="margin-top:auto">
+    <div class="eyebrow">SuperX Support · team briefing · October 2026</div>
+    <h1 style="margin-top:16px;max-width:1300px">One sign-in. One concierge in every game. One desk for the team<b>.</b></h1>
+    <div class="lede">How support moves onto SuperX: what players see, what operators get, and what we build first.</div>
+  </div>
+  <div class="foot"><span>superx.gg</span><span>Prototype: open the map · ←/→ to move</span></div>
+</section>
+
+<!-- 2 -->
+<section class="slide">
+  <div class="eyebrow">01 / Today</div>
+  <h2>Support is a link, a guess, and a lot of tabs<b>.</b></h2>
+  <div class="cards c3">
+    <div class="card"><div class="k">Players</div><div class="t">No real help in the stores</div><div class="s">Prime Rush's SUPPORT link goes to Discord. MaskGun has an FAQ and an email. Tower Conquest's chat doesn't know who you are.</div></div>
+    <div class="card"><div class="k"><span class="dot" style="background:var(--signal)"></span>Live problem</div><div class="t">Wrong game, wrong answers</div><div class="s">Tower Conquest's chat calls our bot anonymously, and gets Prime Rush answers.</div></div>
+    <div class="card"><div class="k">Sign-in</div><div class="t">Three separate logins</div><div class="s">Prime Rush stores, Tower Conquest and MaskGun each sign players in their own way. Nothing is shared.</div></div>
+    <div class="card"><div class="k">Operators</div><div class="t">Work in five places</div><div class="s">Discord, email, Freshdesk, store reviews, the ops dashboard, plus each store's admin.</div></div>
+    <div class="card"><div class="k">What players want</div><div class="t">Nobody sees the pattern</div><div class="s">When a delivery system breaks, we hear about it from angry reviews hours later.</div></div>
+    <div class="card"><div class="k">When it's fixed</div><div class="t">We never come back</div><div class="s">Players have to check again themselves. No push, no mail, no "it's done".</div></div>
+  </div>
+  <div class="foot"><span>SuperX Support</span><span>02</span></div>
+</section>
+
+<!-- 3 -->
+<section class="slide">
+  <div class="eyebrow">02 / What we're building</div>
+  <h2>Three pieces, every game<b>.</b></h2>
+  <div class="cards c3" style="margin-top:40px">
+    <div class="card" style="padding:30px"><div class="k">id.superx.gg</div><div class="t" style="font-size:38px">SuperX ID<b>.</b></div><div class="s">One sign-in for Prime Rush, Tower Conquest and MaskGun. Tap Support in the game and you're already signed in.</div></div>
+    <div class="card" style="padding:30px"><div class="k">support.superx.gg</div><div class="t" style="font-size:38px">The concierge<b>.</b></div><div class="s">A chat that knows the player and fixes things. In the game, on every store page, and at support.superx.gg. Each game's concierge is a character from that game.</div></div>
+    <div class="card" style="padding:30px"><div class="k">ops.superx.gg</div><div class="t" style="font-size:38px">The desk<b>.</b></div><div class="s">Every ticket and live chat, every store's operations, and a daily report on what players want. The reviews responder moves here.</div></div>
+  </div>
+  <div class="cards c5" style="margin-top:22px">
+    <div class="card"><div class="k"><span class="dot" style="background:var(--pr)"></span>Prime Rush LATAM</div></div>
+    <div class="card"><div class="k"><span class="dot" style="background:var(--pr)"></span>Prime Rush Global</div></div>
+    <div class="card"><div class="k"><span class="dot" style="background:var(--pr)"></span>Prime Rush MENA</div></div>
+    <div class="card"><div class="k"><span class="dot" style="background:var(--tc)"></span>Tower Conquest</div></div>
+    <div class="card"><div class="k"><span class="dot" style="background:var(--mg)"></span>MaskGun</div></div>
+  </div>
+  <div class="foot"><span>SuperX Support</span><span>03</span></div>
+</section>
+
+<!-- 4 -->
+<section class="slide">
+  <div class="eyebrow">03 / A player's five minutes</div>
+  <h2>Something breaks. We fix it before they finish typing<b>.</b></h2>
+  <div class="flow">
+    <div class="step"><div class="n">1</div><div class="t">Tap Support in MaskGun</div><div class="s">Opens maskgun.superx.gg/support, signed in by a one-time code from the game.</div></div>
+    <div class="arrow">→</div>
+    <div class="step"><div class="n">2</div><div class="t">Mysterio already knows</div><div class="s">"Your Gold Vest drop never made it out of the armoury." No "how can I help?".</div></div>
+    <div class="arrow">→</div>
+    <div class="step"><div class="n">3</div><div class="t">Fixed in chat</div><div class="s">Re-sends the delivery through the store's own API. Logged for ops.</div></div>
+    <div class="arrow">→</div>
+    <div class="step"><div class="n">4</div><div class="t">We come back</div><div class="s">Push when it lands, in-game mail as backup, one-tap rating.</div></div>
+  </div>
+  <div class="screen" style="margin-top:26px;flex:1"><div class="bar"><i></i><i></i><i></i><span>play/maskgun-support.html</span><a class="open" href="play/maskgun-support.html" target="_blank">open ↗</a></div><div class="vp" data-src="play/maskgun-support.html" data-w="1400"></div></div>
+  <div class="foot"><span>SuperX Support</span><span>04</span></div>
+</section>
+
+<!-- 5 -->
+<section class="slide">
+  <div class="split">
+    <div class="side"><div class="eyebrow">04 / The concierges</div><h2>A character from each game's world<b>.</b></h2>
+      <div class="points">
+        <div><b>Juliana</b> for Prime Rush LATAM, <b>Kaara</b> for Global, <b>Mysterio</b> for MaskGun. Tower Conquest and MENA characters still to pick.</div>
+        <div>Everything they say comes from <b>their universe</b>: greetings, fixes, bad news, help articles.</div>
+        <div>Learned from <b>each game's own players</b>: tickets, Discord, reviews, in their language.</div>
+        <div>Shared rules underneath: no invented prices, nothing about other players, money never in praise.</div>
+      </div></div>
+    <div class="screen"><div class="bar"><i></i><i></i><i></i><span>play/characters.html</span><a class="open" href="play/characters.html" target="_blank">open ↗</a></div><div class="vp" data-src="play/characters.html" data-w="1180"></div></div>
+  </div>
+  <div class="foot"><span>SuperX Support</span><span>05</span></div>
+</section>
+
+<!-- 6 -->
+<section class="slide">
+  <div class="eyebrow">05 / How it talks</div>
+  <h2>Fast, short, does things, comes back<b>.</b></h2>
+  <div class="lede">Modelled on Instinct, the personal agent we use on WhatsApp.</div>
+  <div class="cards c4">
+    <div class="card"><div class="k">Instant</div><div class="t">👀 then "Got it —"</div><div class="s">Reacts in a second, acknowledges in two, then answers.</div></div>
+    <div class="card"><div class="k">Answer first</div><div class="t">"Done — it's in."</div><div class="s">Short bubbles, one to three per turn. No walls of text.</div></div>
+    <div class="card"><div class="k">Proactive</div><div class="t">Opens with what it knows</div><div class="s">A failed delivery, a failed payment, an expiring reward, an outage.</div></div>
+    <div class="card"><div class="k">Acts</div><div class="t">Does, doesn't ask</div><div class="s">Re-send, equip, claim, link. Refunds and currency go to a person.</div></div>
+  </div>
+  <div class="quote">"Viper. Your Gold Vest drop never made it out of the armoury 20 minutes ago. Already sent it again."<div class="mono" style="font-size:15px;color:var(--ink3);margin-top:8px">— Mysterio, MaskGun</div></div>
+  <div class="foot"><span>SuperX Support</span><span>06</span></div>
+</section>
+
+<!-- 7 -->
+<section class="slide">
+  <div class="split">
+    <div class="side"><div class="eyebrow">06 / Everywhere</div><h2>A concierge button on every store page<b>.</b></h2>
+      <div class="points">
+        <div>Always visible, labelled with the character, not a "?" icon.</div>
+        <div>The page tells it what happened: here, <b>a failed payment</b>, so the Captain offers to check.</div>
+        <div>One chat served from support.superx.gg, dropped into every store with one script tag.</div>
+      </div></div>
+    <div class="screen"><div class="bar"><i></i><i></i><i></i><span>towerconquest.superx.gg/store</span><a class="open" href="play/towerconquest-store.html" target="_blank">open ↗</a></div><div class="vp" data-src="play/towerconquest-store.html" data-w="1440"></div></div>
+  </div>
+  <div class="foot"><span>SuperX Support</span><span>07</span></div>
+</section>
+
+<!-- 8 -->
+<section class="slide">
+  <div class="split">
+    <div class="side"><div class="eyebrow">07 / support.superx.gg</div><h2>Every game, one account, one place<b>.</b></h2>
+      <div class="points">
+        <div>Open issues with a <b>status line</b>: received, looking into it, fixed.</div>
+        <div>Every purchase from every game, with <b>"Problem with this order?"</b> next to it.</div>
+        <div>The character for your game sits in the side panel, ready.</div>
+      </div></div>
+    <div class="screen"><div class="bar"><i></i><i></i><i></i><span>support.superx.gg</span><a class="open" href="support/index.html" target="_blank">open ↗</a></div><div class="vp" data-src="support/index.html" data-w="1600"></div></div>
+  </div>
+  <div class="foot"><span>SuperX Support</span><span>08</span></div>
+</section>
+
+<!-- 9 -->
+<section class="slide">
+  <div class="split">
+    <div class="side"><div class="eyebrow">08 / SuperX ID</div><h2>One sign-in for all our games<b>.</b></h2>
+      <div class="points">
+        <div><b>From the game:</b> a one-time code signs the player in. Nothing to type.</div>
+        <div><b>On the web:</b> game ID + a code sent to in-game mail, or Google, or Apple.</div>
+        <div>Sign in once on any superx.gg site and you're in on all of them. Prime Rush stores on other domains use a quick redirect.</div>
+        <div>Built on the Prime Rush account system we already run.</div>
+      </div></div>
+    <div class="screen"><div class="bar"><i></i><i></i><i></i><span>id.superx.gg</span><a class="open" href="id/signin.html" target="_blank">open ↗</a></div><div class="vp" data-src="id/signin.html" data-w="1440"></div></div>
+  </div>
+  <div class="foot"><span>SuperX Support</span><span>09</span></div>
+</section>
+
+<!-- 10 -->
+<section class="slide">
+  <div class="split">
+    <div class="side"><div class="eyebrow">09 / ops.superx.gg</div><h2>The desk: what needs you, right now<b>.</b></h2>
+      <div class="points">
+        <div>A brief like Zero's: approvals waiting, live chats, what got resolved, any spike.</div>
+        <div>Every concierge's status and rating, per game.</div>
+        <div>"Ask ops" on the right: ask why something's broken, get the answer with sources.</div>
+      </div></div>
+    <div class="screen"><div class="bar"><i></i><i></i><i></i><span>ops.superx.gg</span><a class="open" href="ops/index.html" target="_blank">open ↗</a></div><div class="vp" data-src="ops/index.html" data-w="1600"></div></div>
+  </div>
+  <div class="foot"><span>SuperX Support</span><span>10</span></div>
+</section>
+
+<!-- 11 -->
+<section class="slide">
+  <div class="split">
+    <div class="side"><div class="eyebrow">10 / Live</div><h2>Watch any chat. Take over in one click<b>.</b></h2>
+      <div class="points">
+        <div>What each player wants, in one line, across every game.</div>
+        <div>See every step the concierge took, including the store calls it made.</div>
+        <div>Take over, then hand back. Already built in today's dashboard.</div>
+      </div></div>
+    <div class="screen"><div class="bar"><i></i><i></i><i></i><span>ops.superx.gg/live</span><a class="open" href="ops/live.html" target="_blank">open ↗</a></div><div class="vp" data-src="ops/live.html" data-w="1600"></div></div>
+  </div>
+  <div class="foot"><span>SuperX Support</span><span>11</span></div>
+</section>
+
+<!-- 12 -->
+<section class="slide">
+  <div class="split">
+    <div class="side"><div class="eyebrow">11 / Store ops</div><h2>Run every store from one place<b>.</b></h2>
+      <div class="points">
+        <div>Game availability and maintenance messages (GameGateway).</div>
+        <div>Failed deliveries to re-send. Refunds flagged for review. Coupon budgets.</div>
+        <div>Same APIs the stores already use, so it's configured once per game.</div>
+      </div></div>
+    <div class="screen"><div class="bar"><i></i><i></i><i></i><span>ops.superx.gg/store</span><a class="open" href="ops/store.html" target="_blank">open ↗</a></div><div class="vp" data-src="ops/store.html" data-w="1600"></div></div>
+  </div>
+  <div class="foot"><span>SuperX Support</span><span>12</span></div>
+</section>
+
+<!-- 13 -->
+<section class="slide">
+  <div class="split">
+    <div class="side"><div class="eyebrow">12 / Reports</div><h2>Know what players want, every day<b>.</b></h2>
+      <div class="points">
+        <div>Every message is tagged with what the player wanted. An LLM writes a <b>daily digest per game</b>.</div>
+        <div>A <b>spike alert</b> when one ask jumps 3× in an hour, usually a broken backend.</div>
+        <div><b>OpenPing</b> runs a test conversation per game every 15 minutes.</div>
+      </div></div>
+    <div class="screen"><div class="bar"><i></i><i></i><i></i><span>ops.superx.gg/reports</span><a class="open" href="ops/reports.html" target="_blank">open ↗</a></div><div class="vp" data-src="ops/reports.html" data-w="1600"></div></div>
+  </div>
+  <div class="foot"><span>SuperX Support</span><span>13</span></div>
+</section>
+
+<!-- 14 -->
+<section class="slide">
+  <div class="eyebrow">13 / How it fits together</div>
+  <h2>Built on what we already run<b>.</b></h2>
+  <div class="arch">
+    <div class="box"><div class="t">Game clients</div><div class="s">Prime Rush, Tower Conquest, MaskGun. Open the store with a one-time code.</div></div>
+    <div class="box"><div class="t">Stores (Vercel)</div><div class="s">primerush, towerconquest, maskgun .superx.gg and the Prime Rush stores.</div></div>
+    <div class="box"><div class="t">id.superx.gg</div><div class="s">SuperX ID on the Prime Rush account system.</div></div>
+    <div class="box"><div class="t">support.superx.gg</div><div class="s">Player site + the concierge in every store.</div></div>
+    <div class="box ink"><div class="t">Support engine</div><div class="s">Our chat agent, KB, tickets, takeover. Becomes multi-game; chats move to Postgres.</div></div>
+    <div class="box"><div class="t">ops.superx.gg</div><div class="s">Today's ops dashboard, on SuperX.</div></div>
+    <div class="box"><div class="t">GameGateway v2</div><div class="s">The stores' game calls (profile, orders, re-deliver, mail, coupons) in one shared service.</div></div>
+    <div class="box"><div class="t">OpenPing</div><div class="s">Watches the site, the engine and a test chat per game.</div></div>
+    <div class="box"><div class="t">OpenPush + in-game mail</div><div class="s">Tell the player when it's fixed.</div></div>
+  </div>
+  <div class="foot"><span>SuperX Support</span><span>14</span></div>
+</section>
+
+<!-- 15 -->
+<section class="slide">
+  <div class="eyebrow">14 / Fix first · this week</div>
+  <h2>Five problems that are live today<b>.</b></h2>
+  <table class="tbl">
+    <tr><th>#</th><th>Problem</th><th>Fix</th></tr>
+    <tr><td class="mono">F1</td><td><b>Tower Conquest players get Prime Rush answers</b></td><td>Tag the game, answer only from TC's help</td></tr>
+    <tr><td class="mono">F2</td><td>The bot's public chat needs no key and has no limit</td><td>Require the key the store already has; rate-limit</td></tr>
+    <tr><td class="mono">F3</td><td><b>Anyone can act as any player on the LATAM store</b></td><td>Verify the sign-in token; remove <span class="mono">?userid</span></td></tr>
+    <tr><td class="mono">F4</td><td>A service key is written in source code</td><td>Rotate it; move it to settings</td></tr>
+    <tr><td class="mono">F5</td><td>The chat names payment vendors</td><td>App Store · Google Play · SuperX store</td></tr>
+  </table>
+  <div class="foot"><span>SuperX Support</span><span>15</span></div>
+</section>
+
+<!-- 16 -->
+<section class="slide">
+  <div class="eyebrow">15 / Roadmap</div>
+  <h2>MaskGun first, then every game<b>.</b></h2>
+  <table class="tbl">
+    <tr><th>Phase</th><th>Ships</th><th>Players notice</th></tr>
+    <tr><td><span class="tag o">0 · Fix first</span></td><td>The five fixes</td><td>Right answers for TC; LATAM accounts safe</td></tr>
+    <tr><td><span class="tag">1 · Foundations</span></td><td>support.superx.gg and ops.superx.gg live; engine multi-game; OpenPing</td><td>—</td></tr>
+    <tr><td><span class="tag">2 · SuperX ID</span></td><td>One sign-in; launch codes from each game</td><td>Tap Support → signed in</td></tr>
+    <tr><td><span class="tag">3 · Concierge</span></td><td>Button on every store, characters, sees orders</td><td>"Mysterio already knew"</td></tr>
+    <tr><td><span class="tag">4 · Actions</span></td><td>Re-send, equip, claim, coupons; push when fixed</td><td>Fixed without a human, told when it's done</td></tr>
+    <tr><td><span class="tag">5 · The desk</span></td><td>One inbox, store ops, daily reports</td><td>Faster fixes, fewer repeats</td></tr>
+    <tr><td><span class="tag p">6 · Everywhere</span></td><td>Prime Rush stores on other domains; account page; offers after a fix</td><td>One account page for every game</td></tr>
+  </table>
+  <div class="foot"><span>SuperX Support</span><span>16</span></div>
+</section>
+
+<!-- 17 -->
+<section class="slide ink">
+  <div class="eyebrow">16 / Next</div>
+  <h1 style="margin-top:16px">Sreejit leads the build<b>.</b></h1>
+  <div class="cards c3" style="margin-top:40px">
+    <div class="card"><div class="k">Read</div><div class="t" style="font-size:24px">docs/superx/HANDOVER.md</div><div class="s">Spec, repos, 30 tickets, go-live checklist. In robytj/play-review-support.</div></div>
+    <div class="card"><div class="k">Click through</div><div class="t" style="font-size:24px"><a href="index.html" style="color:inherit">The prototype</a></div><div class="s">23 pages: support, sign-in, ops, in-game. Hosted with this deck.</div></div>
+    <div class="card"><div class="k">Decide this week</div><div class="t" style="font-size:24px">Four answers</div><div class="s">Which Supabase project · launch codes from TC and Prime Rush · characters for TC and MENA · GameGateway's bigger role.</div></div>
+  </div>
+  <div class="foot"><span>SuperX Support</span><span>17</span></div>
+</section>
+
+</div>
+<div id="prog"></div>
+<div id="hud"><span id="count"></span><a href="index.html">prototype map</a><a href="#" id="fs">fullscreen (F)</a></div>
+<script>
+(function(){
+  var slides=[].slice.call(document.querySelectorAll('.slide'));
+  var stage=document.getElementById('stage');
+  var i=Math.max(0,Math.min(slides.length-1,(parseInt((location.hash||'#1').slice(1),10)||1)-1));
+  function fit(){var s=Math.min(window.innerWidth/1600,window.innerHeight/900);stage.style.transform='translate(-50%,-50%) scale('+s+')';}
+  function loadFrames(sl){
+    sl.querySelectorAll('.vp').forEach(function(vp){
+      if(vp.dataset.loaded)return;
+      var box=vp.parentElement, w=+vp.dataset.w;
+      var avail=box.clientWidth, h=box.clientHeight-34;
+      vp.style.height=h+'px';
+      var sc=avail/w, f=document.createElement('iframe');
+      f.src=vp.dataset.src; f.loading='lazy'; f.tabIndex=-1;
+      f.style.width=w+'px'; f.style.height=(h/sc)+'px'; f.style.transform='scale('+sc+')';
+      vp.appendChild(f); vp.dataset.loaded=1;
+    });
+  }
+  function show(n){
+    i=(n+slides.length)%slides.length;
+    slides.forEach(function(s,k){s.classList.toggle('on',k===i);});
+    loadFrames(slides[i]);
+    document.getElementById('count').textContent=(i+1)+' / '+slides.length;
+    document.getElementById('prog').style.width=((i+1)/slides.length*100)+'%';
+    history.replaceState(null,'','#'+(i+1));
+  }
+  window.addEventListener('resize',fit);
+  document.addEventListener('keydown',function(e){
+    if(['ArrowRight','PageDown',' ','Enter'].indexOf(e.key)>=0){e.preventDefault();show(i+1);}
+    else if(['ArrowLeft','PageUp','Backspace'].indexOf(e.key)>=0){e.preventDefault();show(i-1);}
+    else if(e.key==='Home')show(0); else if(e.key==='End')show(slides.length-1);
+    else if(e.key==='f'||e.key==='F'){document.fullscreenElement?document.exitFullscreen():document.documentElement.requestFullscreen();}
+  });
+  document.addEventListener('click',function(e){
+    if(e.target.closest('a,.screen'))return;
+    if(e.clientX>window.innerWidth/2)show(i+1); else show(i-1);
+  });
+  document.getElementById('fs').addEventListener('click',function(e){e.preventDefault();document.documentElement.requestFullscreen();});
+  fit(); show(i);
+})();
+</script>
+</body>
+</html>
